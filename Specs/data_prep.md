@@ -195,11 +195,11 @@ You'll need to flatten this into a CSV format for easier processing. Target stru
 | `image_id` | string | Unique image identifier | `248330005_R` |
 | `image_filename` | string | Image filename | `248330005_R.png` |
 | `eye` | string | R (right) or L (left) | `R` |
-| `label` | int | Binary CVD label (0=negative, 1=positive) | `1` |
+| `label` | int | CVD label (0=negative, 1=positive) | `1` |
 | `gender` | int | Gender (1=M, 0=F - verify encoding) | `1` |
 | `age` | int | Patient age in years | `70` |
 | `age_normalized` | float | Normalized age value | `0.7808` |
-| `thickness` | float | Retinal thickness measurement | `1.1` |
+| `thickness` | float | Carotid intima-media thickness measurement | `1.1` |
 | `group` | int | Patient group identifier | `1` |
 | `split` | string | train/val/test (to be assigned) | `train` |
 
@@ -392,5 +392,6 @@ Creating data splits is part of the training phase, not data prep. However, when
 - Green channel has highest contrast in fundus images
 - Avoid vertical flips (anatomically incorrect)
 - Check for blur using Laplacian variance
+
 
 ---
