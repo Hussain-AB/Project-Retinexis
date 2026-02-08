@@ -1,0 +1,23 @@
+# Python 3.10.x
+
+# Core
+torch
+torchvision
+timm==1.0.3
+
+# Data & numerics
+numpy
+pandas
+Pillow
+
+# Training
+optuna
+tqdm
+
+# Evaluation
+scikit-learn
+scipy
+matplotlib
+
+# Testing
+pytest
