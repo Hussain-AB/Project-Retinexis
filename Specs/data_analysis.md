@@ -24,6 +24,11 @@ Before trusting the data, we must verify its physical integrity.
 * *Goal:* The green channel contains the most vascular detail. Low variance here means the image is washed out or blurry.
 
 
+* **Blur Detection:** Measure the Laplacian variance (or other blur metrics) for all images to identify severely blurred images.
+* *Goal:* Quantify how many images are too blurry to be useful for training. Flag images below a threshold (e.g., bottom 5%) and determine if they should be excluded from the training set.
+* *Impact:* Blurry images don't contain reliable medical features and can reduce model performance.
+
+
 ---
 
 ## 2. Leakage Prevention (The "Safety Check")
