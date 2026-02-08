@@ -17,7 +17,10 @@ This document (formatted by Claude but with our input for content) defines a blu
   - Poor illumination (mean pixel intensity checks)
   - Artifacts or occlusions
   - Incorrect color space
+  - Images that have a text overlay on the top left
 - Document percentage of images filtered and reasons
+
+
 
 **Step 2: Duplicate Detection**
 - Check for duplicate images using perceptual hashing
@@ -39,6 +42,7 @@ Apply the following preprocessing steps in order:
   - Histogram equalization (CLAHE!!!)
   - Mean/std normalization per channel
   - Normalize to ImageNet statistics (if using transfer learning)
+  - Detect the "31床" text in the top left corner and black it out
 
 #### 1.2.3 Retinal-Specific Preprocessing
 - **ROI Extraction:** Detect and crop to optic disc region if needed
