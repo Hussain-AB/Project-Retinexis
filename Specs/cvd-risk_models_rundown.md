@@ -6,6 +6,8 @@ This covers everything that will live in the CVD Risk/src/models/ directory.
 
 **Caveat:** I'm in the process of writing these files so everything here is an overview/roadmap at this point and nothing is set in stone. Parts of this might/likely-will have to be adjusted post-testing.
 
+**Status:** I'll write just `base.py`, `efficientnet.py` and a standalone test for now, and then likely on Thursday meeting we will all discuss which other architectures we want to experiment with and what is the research justification for doing so and whether we want to train like the original CIMT study with both eyes processed jointly through the network and whether we want to include the metadata {age, gender} as the original study did. Original study used SE-ResNeXt, which I haven't included here as I'm not sure what else we could add to transfer learning on this exact same model that the original CIMT team hasn't already tried. The more interesting question is perhaps ViTs, in and out of domain. This is a point for open discussion. But the modular pipeline I've set up with the abstract `BaseClassifier` class, means that adding or taking away models from this list will not require much additioanl work going forward. 
+
 
 ## File-by-File Explainers
 
