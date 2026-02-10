@@ -52,10 +52,18 @@ class DedupConfig:
 # -------------------------
 # Paths
 # -------------------------
+from pathlib import Path
 
-BASE_DIR = Path(__file__).resolve().parents[2]
-RAW_DIR = BASE_DIR / "raw" / "ODIR-5K" / "brazilian-ophthalmological" / "1.0.1"
-IMAGES_DIR = RAW_DIR / "fundus_photos"
+REPO_ROOT = Path(__file__).resolve().parents[4]  # Project-Retinexis
+
+IMAGES_DIR = (
+    REPO_ROOT
+    / "raw"
+    / "ODIR-5K"
+    / "brazilian-ophthalmological"
+    / "1.0.1"
+    / "fundus_photos"
+)
 
 MODULE_DIR = Path(__file__).resolve().parent
 PROCESSED_DIR = MODULE_DIR / "processed"
@@ -141,8 +149,15 @@ def load_image_for_hash(image_path: Path) -> Optional[np.ndarray]:
     img = cv2.imread(str(image_path), cv2.IMREAD_GRAYSCALE)
     if img is None:
         return None
-    return img
 
+    # Speed: shrink big images before hashing (pHash is robust to this)
+    h, w = img.shape[:2]
+    max_side = max(h, w)
+    if max_side > 512:
+        scale = 512 / max_side
+        img = cv2.resize(img, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA)
+
+    return img
 
 def phash(image_gray: np.ndarray, cfg: DedupConfig) -> int:
     """
@@ -236,10 +251,13 @@ def compute_hashes(records: List[ImageRecord], cfg: DedupConfig) -> Tuple[Dict[s
     hashes: Dict[str, int] = {}
     failures: List[str] = []
 
-    for r in records:
-        if not r.image_path:
-            failures.append(r.image_filename)
-            continue
+    #for r in records:
+     #   if not r.image_path:
+      #      failures.append(r.image_filename)
+        #    continue
+    for i, r in enumerate(records, start=1):
+        if i % 200 == 0:
+            print(f"Hashing {i}/{len(records)} | ok={len(hashes)} | fail={len(failures)}")
 
         img = load_image_for_hash(Path(r.image_path))
         if img is None:
@@ -502,6 +520,8 @@ def run_deduplication(cfg: DedupConfig):
             "Run process_metadata.py first."
         )
 
+    if not IMAGES_DIR.exists():
+        raise FileNotFoundError(f"Fundus image directory not found: {IMAGES_DIR}")
 
     total_bits = cfg.hash_size * cfg.hash_size
     if cfg.bucket_prefix_bits > total_bits:
@@ -511,7 +531,10 @@ def run_deduplication(cfg: DedupConfig):
     hashes, failures = compute_hashes(records, cfg)
 
     exact_groups = group_exact_duplicates(hashes)
-    near_pairs = build_near_duplicate_pairs(hashes, cfg)
+    #near_pairs = build_near_duplicate_pairs(hashes, cfg)
+    #De
+    near_pairs = []
+
 
     keep_list, drop_list = apply_policy(records, exact_groups, near_pairs, failures)
 
