@@ -61,9 +61,10 @@ class PreprocessConfig:
 #  -------------------------
 # Paths
 #  -------------------------
-BASE_DIR = Path(__file__).resolve().parents[2]
-RAW_DIR = BASE_DIR / "raw" / "ODIR-5K" / "brazilian-ophthalmological" / "1.0.1"
-IMAGES_DIR = RAW_DIR / "fundus_photos"
+DATA_DIR = Path(__file__).resolve().parents[1]  # -> data/
+ODIR_DIR = DATA_DIR / "ODIR-5K"
+TRAIN_IMAGES_DIR = ODIR_DIR / "Training Images"
+TEST_IMAGES_DIR = ODIR_DIR / "Testing Images"
 
 MODULE_DIR = Path(__file__).resolve().parent
 PROCESSED_DIR = MODULE_DIR / "processed"
@@ -85,19 +86,18 @@ PREPROCESS_SUMMARY_TXT = LOGS_DIR / "preprocess_summary.txt"
 #  -------------------------
 # Utility functions
 #  -------------------------
-def resolve_image_path(images_dir: Path, image_filename: str) -> Optional[Path]:
-    """
-    Resolve image path for ODIR-5K fundus images.
-
-    Dataset assumption (verified from folder):
-    - filenames already include extension (.jpg)
-    - stored directly under fundus_photos/
-
-    Returns:
-        Path if exists else None
-    """
-    path = images_dir / image_filename
-    return path if path.exists() else None
+def resolve_image_path(image_filename: str) -> Optional[Path]:
+    """Search Training Images and Testing Images dirs for the file."""
+    for d in (TRAIN_IMAGES_DIR, TEST_IMAGES_DIR):
+        path = d / image_filename
+        if path.exists():
+            return path
+        # fallback: add .jpg if missing
+        if Path(image_filename).suffix == "":
+            path2 = d / f"{image_filename}.jpg"
+            if path2.exists():
+                return path2
+    return None
 
 
 def load_image_rgb(image_path: Path) -> Optional[np.ndarray]:
@@ -221,8 +221,18 @@ def save_image_uint8_rgb(image_rgb: np.ndarray, out_path: Path) -> None:
       Normalized [0,1] arrays are primarily for model ingestion later.
     """
     out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if image_rgb is None or image_rgb.size == 0:
+        raise ValueError(f"Empty image passed to save_image_uint8_rgb for: {out_path}")
+
+    if image_rgb.dtype != np.uint8:
+        raise ValueError(f"Expected uint8 image for saving, got {image_rgb.dtype} for: {out_path}")
+
     bgr = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2BGR)
-    cv2.imwrite(str(out_path), bgr)
+
+    ok = cv2.imwrite(str(out_path), bgr)
+    if not ok:
+        raise RuntimeError(f"cv2.imwrite failed for: {out_path}")
 
 
 #  -------------------------
@@ -303,8 +313,19 @@ def run_preprocessing(cfg: PreprocessConfig):
 
     logs: List[Dict[str, object]] = []
 
-    for fname in keep_df["image_filename"].astype(str).tolist():
-        img_path = resolve_image_path(IMAGES_DIR, fname)
+    filenames = keep_df["image_filename"].astype(str).tolist()
+    total = len(filenames)
+
+    for i, fname in enumerate(filenames, 1):
+        # Skip already-processed images
+        out_path = PROCESSED_IMAGES_DIR / fname
+        if out_path.exists():
+            continue
+
+        if i == 1 or i % 200 == 0:
+            print(f"[{i}/{total}] Processing {fname}...")
+
+        img_path = resolve_image_path(fname)
         if img_path is None:
             logs.append({
                 "image_filename": fname,

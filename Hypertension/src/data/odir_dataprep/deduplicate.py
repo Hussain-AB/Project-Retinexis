@@ -52,18 +52,10 @@ class DedupConfig:
 # -------------------------
 # Paths
 # -------------------------
-from pathlib import Path
-
-REPO_ROOT = Path(__file__).resolve().parents[4]  # Project-Retinexis
-
-IMAGES_DIR = (
-    REPO_ROOT
-    / "raw"
-    / "ODIR-5K"
-    / "brazilian-ophthalmological"
-    / "1.0.1"
-    / "fundus_photos"
-)
+DATA_DIR = Path(__file__).resolve().parents[1]  # -> data/
+ODIR_DIR = DATA_DIR / "ODIR-5K"
+TRAIN_IMAGES_DIR = ODIR_DIR / "Training Images"
+TEST_IMAGES_DIR = ODIR_DIR / "Testing Images"
 
 MODULE_DIR = Path(__file__).resolve().parent
 PROCESSED_DIR = MODULE_DIR / "processed"
@@ -95,6 +87,7 @@ class ImageRecord:
     eye: str
     label: int
     image_path: str
+    subset: str
 
 
 @dataclass
@@ -119,19 +112,18 @@ class NearDuplicatePair:
 # Utility functions
 # -------------------------
 
-def resolve_image_path(images_dir: Path, image_filename: str) -> Optional[Path]:
+def resolve_image_path(image_filename: str) -> Optional[Path]:
     """
-    Resolve image path for ODIR-5K fundus images.
-
-    Assumption (verified):
-    - image_filename already includes file extension (e.g. img16265.jpg)
-    - all images are stored directly under fundus_photos/
+    Resolve image path by searching Training Images and Testing Images dirs.
 
     Returns:
         Path if file exists, else None.
     """
-    path = images_dir / image_filename
-    return path if path.exists() else None
+    for d in (TRAIN_IMAGES_DIR, TEST_IMAGES_DIR):
+        path = d / image_filename
+        if path.exists():
+            return path
+    return None
 
 
 
@@ -229,13 +221,14 @@ def load_records_from_metadata() -> List[ImageRecord]:
     records: List[ImageRecord] = []
     for _, row in df.iterrows():
         image_filename = str(row["image_filename"])
-        path = resolve_image_path(IMAGES_DIR, image_filename)
+        path = resolve_image_path(image_filename)
         records.append(ImageRecord(
             image_filename=image_filename,
             patient_id=str(row["patient_id"]),
             eye=str(row["eye"]),
             label=int(row["label"]),
-            image_path=str(path) if path else ""
+            image_path=str(path) if path else "",
+            subset=str(row.get("subset", "")),
         ))
     return records
 
@@ -448,7 +441,8 @@ def write_outputs(
             "image_filename": r.image_filename,
             "patient_id": r.patient_id,
             "eye": r.eye,
-            "label": r.label
+            "label": r.label,
+            "subset": r.subset,
         })
     pd.DataFrame(keep_rows).to_csv(KEEP_CSV, index=False)
 
@@ -520,8 +514,10 @@ def run_deduplication(cfg: DedupConfig):
             "Run process_metadata.py first."
         )
 
-    if not IMAGES_DIR.exists():
-        raise FileNotFoundError(f"Fundus image directory not found: {IMAGES_DIR}")
+    if not TRAIN_IMAGES_DIR.exists() and not TEST_IMAGES_DIR.exists():
+        raise FileNotFoundError(
+            f"Neither image directory found:\n  {TRAIN_IMAGES_DIR}\n  {TEST_IMAGES_DIR}"
+        )
 
     total_bits = cfg.hash_size * cfg.hash_size
     if cfg.bucket_prefix_bits > total_bits:

@@ -67,9 +67,10 @@ class QCConfig:
 # Paths
 # -------------------------
 
-BASE_DIR = Path(__file__).resolve().parents[2]
-RAW_DIR = BASE_DIR / "raw" / "ODIR-5K" / "brazilian-ophthalmological" / "1.0.1"
-IMAGES_DIR = RAW_DIR / "fundus_photos"
+DATA_DIR = Path(__file__).resolve().parents[1]  # -> data/
+ODIR_DIR = DATA_DIR / "ODIR-5K"
+TRAIN_IMAGES_DIR = ODIR_DIR / "Training Images"
+TEST_IMAGES_DIR = ODIR_DIR / "Testing Images"
 
 MODULE_DIR = Path(__file__).resolve().parent
 PROCESSED_DIR = MODULE_DIR / "processed"
@@ -360,7 +361,10 @@ def run_quality_control(cfg: QCConfig):
 
     for _, row in df.iterrows():
         image_filename = str(row["image_filename"])
-        image_path = IMAGES_DIR / image_filename
+        # Search both Training and Testing directories
+        image_path = TRAIN_IMAGES_DIR / image_filename
+        if not image_path.exists():
+            image_path = TEST_IMAGES_DIR / image_filename
 
         # Attempt load
         img = load_image_rgb(image_path)
