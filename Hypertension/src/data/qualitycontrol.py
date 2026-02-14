@@ -80,7 +80,7 @@ class ImageQualityController:
             
             # 2. Check blur
             blur_score = self.calculate_blur(image)
-            if blur_score < 10:  # Threshold for excessive blur
+            if blur_score < 100:  # Threshold for excessive blur
                 issues.append(f'Excessive blur: {blur_score:.2f}')
             
             # 3. Check illumination
@@ -281,7 +281,7 @@ if __name__ == "__main__":
     # ================================================
 
     # For full run: set to None
-    MAX_IMAGES = 250  # Change to None for full dataset
+    MAX_IMAGES = 100  # Change to None for full dataset
     
     # Run quality control
     print(f"Images directory: {IMAGES_DIR}")
