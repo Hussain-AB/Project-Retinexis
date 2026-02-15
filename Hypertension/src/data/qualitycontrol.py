@@ -20,6 +20,9 @@ class ImageQualityController:
         self.min_resolution = min_resolution
         self.max_images = max_images  # None = process all, or set a number for testing
 
+        self.passed_images_dir = self.output_dir / "passed_images"
+        self.passed_images_dir.mkdir(parents=True, exist_ok=True)
+
         
         # Quality metrics storage
         self.quality_report = []
@@ -80,7 +83,7 @@ class ImageQualityController:
             
             # 2. Check blur
             blur_score = self.calculate_blur(image)
-            if blur_score < 100:  # Threshold for excessive blur
+            if blur_score < 10:  # Threshold for excessive blur
                 issues.append(f'Excessive blur: {blur_score:.2f}')
             
             # 3. Check illumination
@@ -182,6 +185,8 @@ class ImageQualityController:
         
         # Step 1: Quality Assessment
         print("\nStep 1: Assessing image quality...")
+        passed_image_paths = []
+
         for i, img_path in enumerate(image_paths, 1):
             if i % 500 == 0:
                 print(f"  Processed {i}/{total_images} images...")
@@ -191,6 +196,14 @@ class ImageQualityController:
             
             if not quality_result['pass_qc']:
                 self.filtered_images.append(quality_result)
+            else:
+                passed_image_paths.append(img_path)
+
+        print(f"\nCopying {len(passed_image_paths)} passed images to {self.passed_images_dir}...")
+        import shutil
+        for img_path in passed_image_paths:
+            dest_path = self.passed_images_dir / img_path.name
+            shutil.copy2(img_path, dest_path)
         
         # Step 2: Duplicate Detection
         print("\nStep 2: Detecting duplicates...")
@@ -240,6 +253,10 @@ class ImageQualityController:
         print(f"\nDuplicate Detection:")
         print(f"  - Exact duplicates: {exact_dupes}")
         print(f"  - Near-duplicates (for review): {near_dupes}")
+
+        print(f"\nPassed Images:")
+        print(f"  - Copied to: {self.passed_images_dir}")
+        print(f"  - Total passed: {passed_images}")
         
         # Save detailed reports
         output_path = self.output_dir / f"quality_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"

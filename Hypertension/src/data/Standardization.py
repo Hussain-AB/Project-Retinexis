@@ -20,7 +20,8 @@ class FundusImageStandardizer:
                  clahe_clip_limit: float = 2.0,
                  clahe_tile_size: int = 8,
                  enhance_vessels: bool = False,
-                 use_green_channel: bool = False):
+                 use_green_channel: bool = False,
+                 blur_threshold: float = 100.0):
         """
         Initialize the standardizer.
         
@@ -32,6 +33,7 @@ class FundusImageStandardizer:
             clahe_tile_size: CLAHE tile grid size (default 8x8)
             enhance_vessels: Whether to apply vessel enhancement
             use_green_channel: Whether to emphasize green channel
+            blur_threshold: Minimum blur score to pass (default 100, higher = sharper required)
         """
         self.input_dir = Path(input_dir)
         self.output_dir = Path(output_dir)
@@ -45,6 +47,15 @@ class FundusImageStandardizer:
         
         # Processing log
         self.processing_log = []
+
+        # Blur threshold for quality filtering
+        self.blur_threshold = 100  # Default, can be configured
+
+    def calculate_blur(self, image: np.ndarray) -> float:
+        """Calculate Laplacian variance to detect blur. Higher = sharper."""
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        laplacian_var = cv2.Laplacian(gray, cv2.CV_64F).var()
+        return laplacian_var
         
     def detect_and_remove_text(self, image: np.ndarray) -> np.ndarray:
         """
@@ -242,12 +253,25 @@ class FundusImageStandardizer:
             # Note: Normalization to float is usually done just before model input
             # For now, keep in uint8 for saving
             # image_normalized = self.normalize_channels(image)
+
+            # Step 6: Quality check - Blur detection
+            blur_score = self.calculate_blur(image)
+            passes_blur_check = blur_score >= self.blur_threshold
+            
+            if not passes_blur_check:
+                return None, {
+                    'filename': image_path.name,
+                    'status': 'filtered',
+                    'reason': f'Blur score {blur_score:.2f} below threshold {self.blur_threshold}',
+                    'blur_score': blur_score
+                }
             
             metadata = {
                 'filename': image_path.name,
                 'status': 'success',
                 'original_shape': f"{original_shape[1]}x{original_shape[0]}",
                 'final_shape': f"{self.target_size}x{self.target_size}",
+                'blur_score': f"{blur_score:.2f}",
                 'clahe_applied': True,
                 'green_channel': self.use_green_channel,
                 'vessel_enhanced': self.enhance_vessels
@@ -273,6 +297,7 @@ class FundusImageStandardizer:
         print(f"CLAHE: clip_limit={self.clahe_clip_limit}, tile_size={self.clahe_tile_size}x{self.clahe_tile_size}")
         print(f"Green channel emphasis: {self.use_green_channel}")
         print(f"Vessel enhancement: {self.enhance_vessels}")
+        print(f"Blur threshold: {self.blur_threshold} (images below this will be filtered)")
         print()
         
         # Get list of images to process
@@ -293,6 +318,7 @@ class FundusImageStandardizer:
         # Process images
         successful = 0
         failed = 0
+        filtered = 0
         
         for img_path in tqdm(image_paths, desc="Processing images"):
             processed_img, metadata = self.process_image(img_path)
@@ -302,21 +328,26 @@ class FundusImageStandardizer:
                 output_path = self.output_dir / img_path.name
                 cv2.imwrite(str(output_path), processed_img)
                 successful += 1
+            elif metadata.get('status') == 'filtered':
+                # Image was processed but filtered due to blur
+                filtered += 1
             else:
+                # Processing error
                 failed += 1
             
             self.processing_log.append(metadata)
         
         # Generate report
-        self.generate_report(successful, failed, total_images)
+        self.generate_report(successful, filtered, failed, total_images)
     
-    def generate_report(self, successful: int, failed: int, total: int):
+    def generate_report(self, successful: int, filtered: int, failed: int, total: int):
         """Generate standardization report."""
         print("\n" + "="*60)
         print("STANDARDIZATION REPORT")
         print("="*60)
         print(f"\nTotal Images: {total}")
         print(f"Successfully Processed: {successful} ({successful/total*100:.2f}%)")
+        print(f"Filtered (blur too low): {filtered} ({filtered/total*100:.2f}%)")
         print(f"Failed: {failed} ({failed/total*100:.2f}%)")
         
         # Save detailed log
@@ -332,6 +363,7 @@ class FundusImageStandardizer:
             'clahe_tile_size': self.clahe_tile_size,
             'enhance_vessels': self.enhance_vessels,
             'use_green_channel': self.use_green_channel,
+            'blur_threshold': self.blur_threshold,
             'timestamp': datetime.now().isoformat()
         }
         config_path = self.output_dir / "standardization_config.json"
@@ -344,7 +376,7 @@ class FundusImageStandardizer:
 
 if __name__ == "__main__":
     # ====== CONFIGURATION ======
-    INPUT_DIR = r"C:\Users\omara\Downloads\BRSet\physionet.org\files\brazilian-ophthalmological\1.0.1\fundus_photos"
+    INPUT_DIR = r"C:\Users\omara\Project-Retinexis\qc_output\passed_images"
     OUTPUT_DIR = "standardized_images"  # UPDATE THIS
     
     # Image size: 512 or 224
@@ -353,13 +385,17 @@ if __name__ == "__main__":
     # CLAHE parameters
     CLAHE_CLIP_LIMIT = 2.0
     CLAHE_TILE_SIZE = 8
+
+    # Blur threshold for quality filtering (higher = stricter)
+    # Typical values: 50-200 for fundus images after standardization
+    BLUR_THRESHOLD = 100.0
     
     # Optional enhancements
     USE_GREEN_CHANNEL = True  # Set True to emphasize green channel
     ENHANCE_VESSELS = False    # Set True to enhance vascular structures
     
     # For testing: specify files or set to None for all
-    TEST_FILES = ["img00001.jpg", "img00002.jpg", "img00003.jpg"]  # e.g., ['img00001.jpg', 'img00002.jpg'] or None
+    TEST_FILES = None # e.g., ['img00001.jpg', 'img00002.jpg'] or None
     # ==========================================
     
     standardizer = FundusImageStandardizer(
@@ -369,7 +405,8 @@ if __name__ == "__main__":
         clahe_clip_limit=CLAHE_CLIP_LIMIT,
         clahe_tile_size=CLAHE_TILE_SIZE,
         enhance_vessels=ENHANCE_VESSELS,
-        use_green_channel=USE_GREEN_CHANNEL
+        use_green_channel=USE_GREEN_CHANNEL,
+        blur_threshold=BLUR_THRESHOLD
     )
     
     standardizer.standardize_dataset(file_list=TEST_FILES)
