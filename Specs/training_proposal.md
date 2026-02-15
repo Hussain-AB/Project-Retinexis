@@ -99,6 +99,12 @@ The external evaluation cohort (Saudi or Bangladeshi, whatever we get given) is 
 
 **Data efficiency (optional per model):** Repeat Phase 2 at 10%/30%/50%/100% of training data. Suggest limiting to top 3 models.
 
+
+## External cohort evaluation design.
+
+We should run two studies on the external data. First, direct inference with the trained checkpoint — this gives us the raw zero-shot generalisation gap and will likely underperform significantly, but the delta from internal to zero-shot external quantifies the cohort shift problem. Second, light post-training on the external cohort itself: take the trained checkpoint, do 5-fold CV within the external data (4 folds fine-tune, 1 fold test), report mean ± std. This will measure how well each model adapts to the target population with local data, which is the realistic deployment scenario. The model-level comparison that matters most is which models recover fastest with minimal local fine-tuning. Open question is what “light fine-tuning” means: only head-only recalibration, or a short full fine-tune with aggressive early stopping (most realistic), or a full two-phase repeat from the trained checkpoint. Needs discussion — Dr Marwan may have a preference.​​​​​​​​​​​​​​​​
+
+
 ## Open Questions
 
 1. **Data efficiency: all finalists or top 3?**
