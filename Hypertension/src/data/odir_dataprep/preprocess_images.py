@@ -77,6 +77,7 @@ PROCESSED_IMAGES_DIR.mkdir(parents=True, exist_ok=True)
 
 # Input lists produced earlier in pipeline
 KEEP_LIST_CSV = LOGS_DIR / "dedup_keep_list.csv"
+QC_RESULTS_CSV = LOGS_DIR / "qc_results.csv"
 
 # Outputs
 PREPROCESS_LOG_JSON = LOGS_DIR / "preprocess_log.json"
@@ -307,13 +308,35 @@ def run_preprocessing(cfg: PreprocessConfig):
             "Run deduplicate.py first."
         )
 
+    if not QC_RESULTS_CSV.exists():
+        raise FileNotFoundError(
+            f"Missing QC results: {QC_RESULTS_CSV}\n"
+            "Run quality_control.py first."
+        )
+
     keep_df = pd.read_csv(KEEP_LIST_CSV)
     if "image_filename" not in keep_df.columns:
         raise ValueError("dedup_keep_list.csv must contain 'image_filename' column")
 
+    # Load QC results and filter out rejected images
+    qc_df = pd.read_csv(QC_RESULTS_CSV)
+    qc_passed = set(
+        qc_df.loc[qc_df["num_reasons"] == 0, "image_filename"].astype(str)
+    )
+
+    # Only keep images that passed BOTH dedup and QC
+    all_kept = set(keep_df["image_filename"].astype(str))
+    valid_filenames = all_kept & qc_passed
+    qc_rejected_count = len(all_kept - qc_passed)
+
+    print(f"Dedup keep list: {len(all_kept)} images")
+    print(f"QC passed: {len(qc_passed)} images")
+    print(f"Rejected by QC (skipped): {qc_rejected_count} images")
+    print(f"Images to process: {len(valid_filenames)}")
+
     logs: List[Dict[str, object]] = []
 
-    filenames = keep_df["image_filename"].astype(str).tolist()
+    filenames = sorted(valid_filenames)
     total = len(filenames)
 
     for i, fname in enumerate(filenames, 1):

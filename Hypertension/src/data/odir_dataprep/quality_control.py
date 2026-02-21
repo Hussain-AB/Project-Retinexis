@@ -27,29 +27,31 @@ class QCConfig:
     min_width: int = 512
     min_height: int = 512
 
-    # Blur detection
-    # Typical guidance:
-    #   < 100: very blurry
-    #   100-500: acceptable
-    #   > 500: sharp
-    blur_min_variance: float = 100.0
+    # Retinal region masking
+    # Fundus images are circular with a large black background/border.
+    # Computing metrics on the full image (including the black border) produces
+    # misleadingly low blur scores and brightness values.
+    # We mask out the black background before computing blur and brightness.
+    retinal_mask_threshold: int = 15  # pixels with grayscale intensity > this are "retinal"
 
-    # Illumination
-    # Typical good fundus brightness: ~80-180
-    brightness_min: float = 80.0
-    brightness_max: float = 180.0
+    # Blur detection (computed on retinal region only)
+    # Typical guidance for retinal-region-only Laplacian variance:
+    #   < 50: very blurry
+    #   50-500: acceptable
+    #   > 500: sharp
+    blur_min_variance: float = 50.0
+
+    # Illumination (computed on retinal region only, excluding black background)
+    # With background excluded, good fundus brightness typically falls in 40-220.
+    brightness_min: float = 40.0
+    brightness_max: float = 220.0
 
     # Artifacts/occlusion proxy
-    # We implement a measurable proxy:
-    #   If too much of the image is very dark (near-black), it may indicate
-    #   heavy border/occlusion/capture failure.
-    #
-    # This is not perfect clinically, but it is:
-    # - reproducible
-    # - measurable
-    # - logged
+    # Fraction of near-black pixels across the FULL image.
+    # Fundus images naturally have black borders, so we use a higher threshold
+    # (85%) to only flag images with abnormally large dark regions.
     dark_pixel_threshold: int = 15         # pixel intensity considered "near black"
-    max_dark_fraction: float = 0.60        # if > 60% near-black pixels, flag
+    max_dark_fraction: float = 0.85        # if > 85% near-black pixels, flag
 
     # Text overlay detection 
     # For BRSET images, the specific "31床" may not exist,
@@ -151,27 +153,58 @@ def compute_resolution(image: np.ndarray) -> Tuple[int, int]:
     return w, h
 
 
-def compute_blur_score(image_rgb: np.ndarray) -> float:
+def create_retinal_mask(image_rgb: np.ndarray, threshold: int) -> np.ndarray:
     """
-    Compute blur score using Laplacian variance on grayscale.
+    Create a binary mask separating the retinal region from the black background.
+
+    Fundus images are circular with a large black border. Computing metrics
+    on the full image skews results because the black pixels dominate.
+
+    Args:
+        threshold: grayscale intensity above which a pixel is considered
+                   part of the retinal region.
+
+    Returns:
+        Boolean mask (H, W) where True = retinal region.
+    """
+    gray = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2GRAY)
+    return gray > threshold
+
+
+def compute_blur_score(image_rgb: np.ndarray, retinal_mask: np.ndarray) -> float:
+    """
+    Compute blur score using Laplacian variance on the retinal region only.
 
     Purpose:
     - Laplacian variance is a standard focus/blur heuristic.
     - Lower values mean blurrier images.
+    - Computing on the retinal region only avoids the black background
+      diluting the variance and producing misleadingly low scores.
     """
     gray = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2GRAY)
-    return float(cv2.Laplacian(gray, cv2.CV_64F).var())
+    laplacian = cv2.Laplacian(gray, cv2.CV_64F)
+    # Only consider Laplacian values within the retinal region
+    masked_values = laplacian[retinal_mask]
+    if len(masked_values) == 0:
+        return 0.0
+    return float(np.var(masked_values))
 
 
-def compute_brightness(image_rgb: np.ndarray) -> float:
+def compute_brightness(image_rgb: np.ndarray, retinal_mask: np.ndarray) -> float:
     """
-    Compute mean pixel intensity across all channels.
+    Compute mean pixel intensity across the retinal region only.
 
     Purpose:
     - Very low brightness suggests underexposed images.
     - Very high brightness suggests overexposed images.
+    - Excluding the black background prevents fundus images from always
+      appearing too dark due to their circular shape.
     """
-    return float(np.mean(image_rgb))
+    gray = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2GRAY)
+    masked_values = gray[retinal_mask]
+    if len(masked_values) == 0:
+        return 0.0
+    return float(np.mean(masked_values))
 
 
 def compute_dark_fraction(image_rgb: np.ndarray, threshold: int) -> float:
@@ -235,8 +268,9 @@ def evaluate_qc(image_rgb: np.ndarray, cfg: QCConfig) -> Tuple[Dict[str, float],
         metrics dict, list of reasons_failed, overlay_flag
     """
     w, h = compute_resolution(image_rgb)
-    blur = compute_blur_score(image_rgb)
-    bright = compute_brightness(image_rgb)
+    retinal_mask = create_retinal_mask(image_rgb, cfg.retinal_mask_threshold)
+    blur = compute_blur_score(image_rgb, retinal_mask)
+    bright = compute_brightness(image_rgb, retinal_mask)
     dark_frac = compute_dark_fraction(image_rgb, cfg.dark_pixel_threshold)
     overlay = detect_top_left_overlay(image_rgb, cfg.overlay_patch_frac, cfg.overlay_edge_threshold)
 
