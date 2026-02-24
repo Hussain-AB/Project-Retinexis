@@ -4,6 +4,7 @@
 torch
 torchvision
 timm==1.0.3
+transformers
 
 # Data & numerics
 numpy
