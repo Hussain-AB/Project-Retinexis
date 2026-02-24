@@ -150,8 +150,8 @@ class TrainConfig:
         the trainer tries to load data, since paths may be relative
         to PROJECT_ROOT which is set by the SLURM environment.
         """
-        if self.dataset not in ("cimt", "brset"):
-            raise ValueError(f"dataset must be 'cimt' or 'brset', got '{self.dataset}'")
+        if not self.dataset:
+            raise ValueError("dataset must not be empty")
 
         if not self.architecture:
             raise ValueError("architecture must not be empty")
