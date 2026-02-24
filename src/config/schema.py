@@ -39,12 +39,17 @@ class TrainConfig:
     model_kwargs: dict[str, Any] = field(default_factory=dict)
     fold: int = 0                       # 0–4 for 5-fold CV
 
-    # Relative to project root unless absolute. SLURM env_setup.sh
+    # Paths - Relative to project root unless absolute. SLURM env_setup.sh
     # exports PROJECT_ROOT and DATA_DIR; configs can use these.
     data_dir: str = ""                  # root directory containing images or if we're doing this another way need to discuss this
     labels_csv: str = ""                # path to labels CSV
     splits_file: str = ""               # path to saved fold splits JSON
     output_dir: str = "outputs"         # base output directory
+
+    # Column mapping
+    sample_id_col: str = "image_id"    
+    label_col: str = "label"            
+    patient_id_col: str = "patient_id"  
 
     # Phase 1: Linear Probe
     # Frozen backbone, head-only training. Quick screening.
