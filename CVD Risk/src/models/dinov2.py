@@ -269,28 +269,3 @@ def dinov2_collate_fn(
         "images_L": torch.stack([sample[1] for sample in inputs], dim=0),
         "labels": torch.stack([sample[2] for sample in inputs], dim=0),
     }
-"""
-resnet — ResNet-based classifier for retinal fundus images.
-
-This serves as the universal baseline for our architecture comparison.
-It anchors our results to the broader literature, as earlier BRSET 
-work utilized ResNet-50 before transitioning to ConvNeXt V2.
-
-Architecture flow:
-    1. Input image (B, 3, input_size, input_size)
-    2. timm backbone with num_classes=0 → pooled features (B, feature_dim)
-    3. Linear head → logits (B, 1)
-"""
-
-from __future__ import annotations
-
-import torch
-import torch.nn as nn
-import timm
-
-from .base import BaseClassifier, PreprocessingConfig, IMAGENET_NORM
-
-# Variant configuration
-VARIANT_CONFIG = {
-    "resnet50": {"model_name": "resnet50", "feature_dim": 2048, "input_size": 224},
-}
