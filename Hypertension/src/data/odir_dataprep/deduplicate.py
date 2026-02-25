@@ -527,9 +527,7 @@ def run_deduplication(cfg: DedupConfig):
     hashes, failures = compute_hashes(records, cfg)
 
     exact_groups = group_exact_duplicates(hashes)
-    #near_pairs = build_near_duplicate_pairs(hashes, cfg)
-    #De
-    near_pairs = []
+    near_pairs = build_near_duplicate_pairs(hashes, cfg)
 
 
     keep_list, drop_list = apply_policy(records, exact_groups, near_pairs, failures)
