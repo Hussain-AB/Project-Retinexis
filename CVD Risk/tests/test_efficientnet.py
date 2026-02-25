@@ -17,6 +17,7 @@ import torch.nn as nn
 
 from src.models.base import BaseClassifier, PreprocessingConfig, IMAGENET_NORM
 from src.models.efficientnet import EfficientNetClassifier, VARIANT_CONFIG
+from src.models import create_model, MODEL_REGISTRY, BaseClassifier, PreprocessingConfig
 
 
 # helpers
@@ -298,3 +299,38 @@ class TestDeterminism:
             out2 = model(x)
 
         assert torch.allclose(out1, out2)
+
+# Pipeline integration — factory + registry with EfficientNet only
+
+class TestPipeline:
+
+    def test_registry_contains_efficientnet(self):
+        assert "efficientnet" in MODEL_REGISTRY
+
+    def test_registry_only_has_implemented_models(self):
+        """No stubs in the registry — everything listed must instantiate."""
+        for name in MODEL_REGISTRY:
+            model = create_model(name, pretrained=False)
+            assert isinstance(model, BaseClassifier)
+
+    def test_factory_creates_efficientnet(self):
+        model = create_model("efficientnet", variant="b2", pretrained=False)
+        assert isinstance(model, BaseClassifier)
+        assert model.preprocessing_config.input_size == 260
+
+    def test_factory_rejects_unknown_architecture(self):
+        with pytest.raises(ValueError, match="Unknown architecture"):
+            create_model("dinov2", variant="base", pretrained=False)
+
+    def test_factory_rejects_bad_kwargs(self):
+        with pytest.raises(ValueError, match="Unexpected kwargs"):
+            create_model("efficientnet", variant="b2", wrong_param=True)
+
+    def test_full_forward_through_factory(self):
+        """End-to-end: factory → model → forward → (B, 1) logits."""
+        model = create_model("efficientnet", variant="b2", pretrained=False)
+        model.eval()
+        x = torch.randn(2, 3, 260, 260)
+        with torch.no_grad():
+            logits = model(x)
+        assert logits.shape == (2, 1)
