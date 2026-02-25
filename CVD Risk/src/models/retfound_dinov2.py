@@ -70,14 +70,8 @@ class RETFoundDINOv2(BaseClassifier):
     # required methods
 
     def get_features(self, x: torch.Tensor) -> torch.Tensor:
-        """Extract feature vector from input images.
-
-        Args:
-            x: Input tensor of shape (B, 3, 224, 224).
-
-        Returns:
-            Feature tensor of shape (B, 1024).
-        """
+        """Extract feature vector from input images. """
+        
         # timm's forward_features returns the backbone output
         features = self.model.forward_features(x)
 
@@ -88,14 +82,8 @@ class RETFoundDINOv2(BaseClassifier):
         return features
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Full forward pass: backbone features -> classification head.
+        """Full forward pass: backbone features -> classification head.   """
 
-        Args:
-            x: Input tensor of shape (B, 3, 224, 224).
-
-        Returns:
-            Predictions of shape (B, 1).
-        """
         features = self.get_features(x)
         output = self._head(features)
         self._validate_output_shape(output, x.size(0))
