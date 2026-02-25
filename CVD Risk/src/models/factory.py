@@ -24,6 +24,14 @@ _EXPECTED_KWARGS: dict[str, set[str]] = {
         "drop_rate", 
         "input_size_override",
     },
+    
+    "seresnext": {
+        "variant", 
+        "num_classes", 
+        "pretrained", 
+        "drop_rate", 
+        "input_size_override",
+    },
 }
 
 def create_model(architecture: str, **kwargs) -> BaseClassifier:
