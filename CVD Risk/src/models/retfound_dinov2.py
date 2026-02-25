@@ -1,5 +1,5 @@
 import torch
-#neural netwrk module for classification head
+# neural network module for classification head
 import torch.nn as nn
 
 # timm is used to create the DINOv2 ViT architecture (same as official RETFound repo)
@@ -8,11 +8,8 @@ import timm
 # huggingface_hub to download the .pth weights from the gated repo
 from huggingface_hub import hf_hub_download
 
-#import the AutoModel from transformers to load the hugging face chcekpoints 
-#from transformers import AutoModel
-
-# import project abstarct class 
-from .base import BaseClassifier, PreprocessingConfig
+# import project abstract class
+from .base import BaseClassifier, PreprocessingConfig, IMAGENET_NORM
 
 
 # create the class
@@ -37,30 +34,31 @@ class RETFoundDINOv2(BaseClassifier):
             checkpoint_path=weights_path,
         )
 
-         # timm equivalent feature dim from the model (should be 1024 for ViT-Large)
+        # feature dim from the model (should be 1024 for ViT-Large)
         self._feature_dim = self.model.num_features
 
-         # Add a simple classification head (linear layer)
-         self._head = nn.Linear(self._feature_dim, 1)
+        # classification head (linear layer)
+        self._head = nn.Linear(self._feature_dim, 1)
 
-# required properties for the abstract class
+    # required properties for the abstract class
+
     @property
-     def backbone(self) -> nn.Module:
+    def backbone(self) -> nn.Module:
         """Return the feature extractor (everything except the classification head)."""
         return self.model
-   
-       @property
-       def head(self) -> nn.Module:
-         """Return the classification layer."""
-         return self._head
 
-      @property
-      def feature_dim(self) -> int:
+    @property
+    def head(self) -> nn.Module:
+        """Return the classification layer."""
+        return self._head
+
+    @property
+    def feature_dim(self) -> int:
         """Return the feature dimension of the backbone."""
         return self._feature_dim
 
-      @property
-      def preprocessing_config(self) -> PreprocessingConfig:
+    @property
+    def preprocessing_config(self) -> PreprocessingConfig:
         """Declare input size and normalisation for ViT-Large/14."""
         return PreprocessingConfig(
             input_size=224,
@@ -69,12 +67,36 @@ class RETFoundDINOv2(BaseClassifier):
             crop_strategy="center",
         )
 
-# required mothods 
+    # required methods
 
+    def get_features(self, x: torch.Tensor) -> torch.Tensor:
+        """Extract feature vector from input images.
 
+        Args:
+            x: Input tensor of shape (B, 3, 224, 224).
 
-      
+        Returns:
+            Feature tensor of shape (B, 1024).
+        """
+        # timm's forward_features returns the backbone output
+        features = self.model.forward_features(x)
 
+        # if it returns (B, num_tokens, dim), extract the CLS token
+        if features.dim() == 3:
+            features = features[:, 0]
 
+        return features
 
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Full forward pass: backbone features -> classification head.
 
+        Args:
+            x: Input tensor of shape (B, 3, 224, 224).
+
+        Returns:
+            Predictions of shape (B, 1).
+        """
+        features = self.get_features(x)
+        output = self._head(features)
+        self._validate_output_shape(output, x.size(0))
+        return output
