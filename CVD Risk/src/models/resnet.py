@@ -38,3 +38,35 @@ class ResNetClassifier(BaseClassifier):
             num_classes=0,
             drop_rate=drop_rate,
         )
+        self._head = nn.Linear(self._feature_dim, 1)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        features = self._backbone(x)
+        logits = self._head(features)
+        self._validate_output_shape(logits, x.size(0))
+        return logits
+
+    def get_features(self, x: torch.Tensor) -> torch.Tensor:
+        """Returns (B, feature_dim) after global average pooling."""
+        return self._backbone(x)
+
+    @property
+    def backbone(self) -> nn.Module:
+        return self._backbone
+
+    @property
+    def head(self) -> nn.Module:
+        return self._head
+
+    @property
+    def feature_dim(self) -> int:
+        return self._feature_dim
+
+    @property
+    def preprocessing_config(self) -> PreprocessingConfig:
+        return PreprocessingConfig(
+            input_size=self._input_size,
+            mean=IMAGENET_NORM["mean"],
+            std=IMAGENET_NORM["std"],
+            crop_strategy="pad_to_square",
+        )
