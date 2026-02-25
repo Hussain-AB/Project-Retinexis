@@ -9,6 +9,7 @@ __all__ = [
     "PreprocessingConfig",
     "EfficientNetClassifier",
     "DINOv2Classifier",
+    "ResNetClassifier",
     "create_model",
     "MODEL_REGISTRY",
 ]
