@@ -10,6 +10,7 @@ __all__ = [
     "EfficientNetClassifier",
     "DINOv2Classifier",
     "ResNetClassifier",
+    "SEResNeXtClassifier",
     "create_model",
     "MODEL_REGISTRY",
 ]
