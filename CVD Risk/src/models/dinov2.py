@@ -156,7 +156,9 @@ class DINOv2Classifier(BaseClassifier):
 
 class DINOv2Dataset(Dataset[tuple[torch.Tensor, torch.Tensor]]):
     """
-    Minimal single-image dataset wrapper.
+    Minimal single-image dataset wrapper. Note that you need to ensure you are using the correct format of the dataset,
+    specifically use the data set at load_dataset("abdalla390/CIMT_5806_Thickness_Classification"), which is private,
+    contact abdalla390 to get access.
 
     Expected sample keys:
       - "image"
