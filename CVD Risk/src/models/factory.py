@@ -16,6 +16,14 @@ _EXPECTED_KWARGS: dict[str, set[str]] = {
         "input_size_override",
         "linear_probe",
     },
+    "dinov3": {
+        "variant",
+        "num_classes",
+        "pretrained",
+        "pool",
+        "linear_probe",
+        "input_size_override",
+    },
     
     "resnet": {                      
         "variant", 
