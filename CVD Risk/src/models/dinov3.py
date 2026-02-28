@@ -3,7 +3,7 @@ dinov3 — DINOv3-Large classifier for retinal fundus images.
 
 ViT-Large, ~304M params. Loaded via HuggingFace Transformers.
 Architecture flow:
-    1. Input image (B, 3, 224, 224)
+    1. Input image (B, 3, input_size, input_size)
     2. AutoModel -> last_hidden_state (B, num_patches+1, hidden_size)
     3. CLS token or mean of patch tokens -> (B, hidden_size)
     4. Linear head -> logits (B, 1)
@@ -13,19 +13,16 @@ from __future__ import annotations
 
 import torch
 import torch.nn as nn
-from transformers import AutoModel, AutoConfig
+from transformers import AutoModel, AutoConfig, AutoImageProcessor
 
-from .base import BaseClassifier, PreprocessingConfig, IMAGENET_NORM
+from .base import BaseClassifier, PreprocessingConfig
 
 
-# TODO: replace with the real HuggingFace model ID for DINOv3-Large.
-# e.g. "facebook/dinov3-large" or whatever the team confirms.
-_DINOV3_LARGE_MODEL_ID = "PLACEHOLDER/dinov3-large"
+_DINOV3_LARGE_MODEL_ID = "facebook/dinov3-vitl16-pretrain-lvd1689m"
 
 VARIANT_CONFIG = {
     "large": {
         "model_id": _DINOV3_LARGE_MODEL_ID,
-        "input_size": 224,
     },
 }
 
@@ -56,8 +53,14 @@ class DINOv3Classifier(BaseClassifier):
             )
 
         config = VARIANT_CONFIG[variant]
-        self._input_size = input_size_override or config["input_size"]
         self._pool = pool
+
+        processor = AutoImageProcessor.from_pretrained(config["model_id"])
+        self._norm_mean = tuple(processor.image_mean)
+        self._norm_std = tuple(processor.image_std)
+        size = processor.size
+        processor_size = size.get("height") or size.get("shortest_edge", 224)
+        self._input_size = input_size_override or processor_size
 
         self._backbone = self._load_backbone(
             model_id=config["model_id"],
@@ -115,7 +118,7 @@ class DINOv3Classifier(BaseClassifier):
     def preprocessing_config(self) -> PreprocessingConfig:
         return PreprocessingConfig(
             input_size=self._input_size,
-            mean=IMAGENET_NORM["mean"],
-            std=IMAGENET_NORM["std"],
+            mean=self._norm_mean,
+            std=self._norm_std,
             crop_strategy="resize",
         )
