@@ -134,6 +134,7 @@ class ImageQualityController:
         """Detect exact and near duplicates using perceptual hashing"""
         print("Detecting duplicates...")
         hash_dict = {}
+        duplicates_to_exclude = set()
         
         for img_path in image_paths:
             try:
@@ -145,6 +146,7 @@ class ImageQualityController:
                 hash_str = str(img_hash)
                 if hash_str in hash_dict:
                     self.duplicates[hash_str].append(img_path.name)
+                    duplicates_to_exclude.add(img_path.name)
                 else:
                     hash_dict[hash_str] = img_path.name
                 
@@ -161,7 +163,7 @@ class ImageQualityController:
             except Exception as e:
                 print(f"Error processing {img_path.name}: {e}")
         
-        return hash_dict
+        return duplicates_to_exclude
     
     def run_quality_control(self):
         """Run complete quality control pipeline"""
@@ -183,8 +185,12 @@ class ImageQualityController:
             print("No images found!")
             return
         
-        # Step 1: Quality Assessment
-        print("\nStep 1: Assessing image quality...")
+        # Step 1: Duplicate Detection
+        print("\nStep 1: Detecting duplicates...")
+        duplicates_to_exclude = self.detect_duplicates(image_paths)
+        
+        # Step 2: Quality Assessment
+        print("\nStep 2: Assessing image quality...")
         passed_image_paths = []
 
         for i, img_path in enumerate(image_paths, 1):
@@ -192,6 +198,18 @@ class ImageQualityController:
                 print(f"  Processed {i}/{total_images} images...")
             
             quality_result = self.assess_image_quality(img_path)
+
+             # Flag duplicates as failed in the quality report
+            if img_path.name in duplicates_to_exclude:
+                quality_result['pass_qc'] = False
+                quality_result['status'] = 'FAILED'
+                existing_issues = quality_result.get('issues', 'None')
+                dup_issue = 'Duplicate image'
+                quality_result['issues'] = (
+                    dup_issue if existing_issues == 'None'
+                    else f'{existing_issues}; {dup_issue}'
+                )
+
             self.quality_report.append(quality_result)
             
             if not quality_result['pass_qc']:
@@ -204,10 +222,6 @@ class ImageQualityController:
         for img_path in passed_image_paths:
             dest_path = self.passed_images_dir / img_path.name
             shutil.copy2(img_path, dest_path)
-        
-        # Step 2: Duplicate Detection
-        print("\nStep 2: Detecting duplicates...")
-        self.detect_duplicates(image_paths)
         
         # Generate report
         self.generate_report()

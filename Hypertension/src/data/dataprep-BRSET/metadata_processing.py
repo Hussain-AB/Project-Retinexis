@@ -76,7 +76,7 @@ class MetadataProcessor:
         metadata['image_filename'] = metadata['image_id'] + '.jpg'
         
         # 4. eye (string, exam_eye: 1=L, 2=R)
-        metadata['eye'] = df['exam_eye'].map({1: 'L', 2: 'R'})
+        metadata['eye'] = df['exam_eye'].map({1: 'R', 2: 'L'})
         
         # 5. hypertension (int, 1 if 'hypertension' in comorbidities string, 0 otherwise)
         metadata['hypertension'] = df['comorbidities'].apply(
@@ -87,7 +87,7 @@ class MetadataProcessor:
         metadata['hypertensive_retinopathy'] = df['hypertensive_retinopathy']
         
         # 7. gender (named patient_sex, save as is)
-        metadata['gender'] = df['patient_sex']
+        metadata['gender'] = df['patient_sex'].map({1: 1 ,2: 0})
         
         # 8. age (named patient_age, save as is)
         metadata['age'] = df['patient_age']
