@@ -1,0 +1,393 @@
+"""
+training.trainer — Trainer class for Phase 1 (linear probe) and Phase 2 (fine-tune).
+
+Central orchestrator for a single training run (1 model × 1 fold).
+Model-agnostic and dataset-agnostic — all specifics come from config
+and the contracts in base.py / base_dataset.py.
+
+Lifecycle:
+    trainer = Trainer(config, model, device)
+    results = trainer.run()
+
+    run() orchestrates:
+        1. Resume from checkpoint if config.checkpoint_path is set
+        2. Phase 1 (linear probe) unless skip_phase1
+        3. Phase 2 (fine-tune) unless phase2_epochs == 0
+        4. Load best checkpoint → final eval → save predictions CSV
+        5. Return metrics dict
+
+Phase 1: frozen backbone, head-only, flat LR, 5 epochs, ~15 min.
+Phase 2: all params, layer-wise LR decay, cosine warmup, early stopping, up to 50 epochs.
+
+Logging is handled by TrainLogger (src/training/logging.py), which
+writes CSV always and W&B when enabled. The trainer never calls
+wandb directly.
+
+Checkpoints include model weights, optimiser state, scheduler state,
+RNG states, and full config. See _save_checkpoint for exact format.
+
+RESUME NOTE (spike finding, 2026-02-26):
+    _load_checkpoint restores model weights and RNG states but the
+    optimiser/scheduler are currently rebuilt fresh in each phase method.
+    This means after a SLURM kill, the resumed run has correct model
+    weights and data ordering, but the optimiser loses its adaptive
+    state (Adam momentum). In practice this causes a 2-3 epoch blip.
+    To fix: load checkpoint["optimiser_state_dict"] and
+    checkpoint["scheduler_state_dict"] after constructing them in
+    _run_phase2. ~10 lines. Do this before Phase 2 Ibex runs.
+
+METADATA FUSION:
+    When config.use_metadata=True, the trainer constructs a separate
+    metadata_head that takes model.get_features() + encoded metadata.
+    The model's own head is bypassed but stays attached for state_dict
+    consistency. See _build_metadata_head() and _forward().
+"""
+
+from __future__ import annotations
+
+import math
+import time
+from pathlib import Path
+from typing import Any
+
+import numpy as np
+import pandas as pd
+import torch
+import torch.nn as nn
+from torch.optim import AdamW
+from torch.optim.lr_scheduler import LambdaLR
+from torch.utils.data import DataLoader
+
+from src.config.schema import TrainConfig
+from src.models.base import BaseClassifier
+from src.data.loader import create_dataloaders, rebuild_loaders
+from src.data.base_dataset import MetadataEncoder
+from src.training.loss import build_loss
+from src.training.optimiser import build_layer_wise_param_groups
+from src.training.scheduler import build_cosine_warmup_scheduler
+from src.training.logging import TrainLogger
+from src.evaluation.metrics import compute_metrics
+from src.utils.reproducibility import get_rng_states, set_rng_states
+
+
+# HELPER: Metadata head construction
+# Small enough to stay here. Extract to metadata.py if fusion grows.
+def _build_metadata_head(
+    feature_dim: int,
+    metadata_dim: int,
+    hidden_dim: int = 0,
+) -> nn.Module:
+    """Build classification head for metadata fusion mode.
+
+    Maps (B, feature_dim + metadata_dim) → (B, 1).
+    If hidden_dim > 0: two-layer MLP with ReLU + dropout.
+    If hidden_dim == 0: single linear projection.
+    """
+    input_dim = feature_dim + metadata_dim
+    if hidden_dim > 0:
+        return nn.Sequential(
+            nn.Linear(input_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(0.3),
+            nn.Linear(hidden_dim, 1),
+        )
+    return nn.Linear(input_dim, 1)
+
+#  TRAINER CLASS
+class Trainer:
+    """Runs Phase 1 + Phase 2 for a single model × fold."""
+
+    def __init__(
+        self,
+        config: TrainConfig,
+        model: BaseClassifier,
+        device: torch.device,
+    ) -> None:
+        self.config = config
+        self.device = device
+        self.model = model.to(device)
+
+        # Build data loaders (Phase 1 batch size initially)
+        self.train_loader, self.val_loader, self.metadata_encoder = \
+            create_dataloaders(config, model, batch_size=config.phase1_batch_size)
+
+        # Metadata head (only when use_metadata=True)
+        # Lives on the trainer, not the model. model.head is bypassed
+        # but stays attached for state_dict consistency.
+        self.metadata_head: nn.Module | None = None
+        if config.use_metadata and self.metadata_encoder is not None:
+            self.metadata_head = _build_metadata_head(
+                feature_dim=model.feature_dim,
+                metadata_dim=self.metadata_encoder.output_dim,
+                hidden_dim=config.metadata_head_hidden,
+            ).to(device)
+
+        # Loss function
+        # Auto-computes pos_weight from training labels if needed.
+        # See loss.py header for class imbalance rationale.
+        train_labels = self.train_loader.dataset.labels
+        self.criterion = build_loss(
+            use_weighted_bce=config.use_weighted_bce,
+            pos_weight=config.pos_weight,
+            train_labels=train_labels,
+            device=device,
+        )
+
+        # Logger (CSV always, W&B if enabled)
+        self.logger = TrainLogger(config)
+
+        # Training state
+        self.best_val_auroc: float = 0.0
+        self.start_epoch: int = 0
+        self.start_phase: str = "phase1"
+
+        # Create output directories
+        config.checkpoint_dir.mkdir(parents=True, exist_ok=True)
+        config.predictions_dir.mkdir(parents=True, exist_ok=True)
+        config.log_dir.mkdir(parents=True, exist_ok=True)
+
+        # Save resolved config (exists even if job is killed)
+        config.save(config.run_dir / "config_resolved.yaml")
+
+    #  RUN — main entry point
+    def run(self) -> dict:
+        """Execute full training lifecycle. Returns metrics dict."""
+        results: dict[str, Any] = {}
+
+        # Resume if checkpoint provided
+        if self.config.checkpoint_path:
+            self._load_checkpoint(self.config.checkpoint_path)
+
+        # Phase 1
+        if not self.config.skip_phase1 and self.start_phase == "phase1":
+            phase1_auroc = self._run_phase1()
+            results["phase1_auroc"] = phase1_auroc
+
+        # Phase 2
+        if self.config.phase2_epochs > 0:
+            phase2_auroc = self._run_phase2()
+            results["phase2_auroc"] = phase2_auroc
+
+        # Final evaluation with best checkpoint
+        best_path = self.config.checkpoint_dir / "best.pt"
+        if best_path.exists():
+            self._load_model_weights(best_path)
+            final_metrics = self._evaluate_final()
+            results["final_metrics"] = final_metrics
+            results["best_val_auroc"] = final_metrics.get("auroc", self.best_val_auroc)
+        else:
+            results["best_val_auroc"] = self.best_val_auroc
+
+        # Log summary to W&B
+        self.logger.log_summary(results)
+        self.logger.finish()
+
+        return results
+
+    #  PHASE 1: LINEAR PROBE
+    def _run_phase1(self) -> float:
+        """Frozen backbone, head-only training. Returns final val AUROC."""
+        config = self.config
+
+        # TODO: set model to linear probe mode
+        #   model.set_linear_probe_mode()
+        #   this freezes backbone, locks it in eval, keeps head in train
+
+        # TODO: build Phase 1 optimiser
+        #   AdamW on head params only (or metadata_head if metadata mode)
+        #   flat LR = config.phase1_lr
+        #   no scheduler (5 epochs isn't worth scheduling)
+
+        # TODO: training loop for config.phase1_epochs
+        #   for epoch in range(config.phase1_epochs):
+        #       train_loss = self._train_one_epoch(optimiser)
+        #       val_loss, val_metrics = self._validate_one_epoch()
+        #       self.logger.log_epoch(epoch, "phase1", train_loss, val_loss, val_metrics, lr, elapsed)
+        #       track best_val_auroc
+
+        # TODO: save last.pt after Phase 1 completes
+        #   single checkpoint (not per-epoch — it's only 5 epochs)
+
+        # TODO: return final epoch's val AUROC
+        raise NotImplementedError("Phase 1 — implement with other MLOps lead")
+
+    #  PHASE 2: FINE-TUNE
+    def _run_phase2(self) -> float:
+        """Full fine-tuning with early stopping. Returns best val AUROC."""
+        config = self.config
+
+        # TODO: switch model to finetune mode
+        #   model.set_finetune_mode()
+
+        # TODO: rebuild loaders with phase2 batch size
+        #   self.train_loader, self.val_loader = rebuild_loaders(
+        #       self.train_loader, self.val_loader,
+        #       batch_size=config.phase2_batch_size, config=config)
+
+        # TODO: build optimiser with layer-wise LR decay
+        #   param_groups = build_layer_wise_param_groups(
+        #       model, config.phase2_lr, config.lr_decay_factor,
+        #       config.weight_decay, self.metadata_head)
+        #   optimiser = AdamW(param_groups)
+
+        # TODO: build cosine warmup scheduler
+        #   scheduler = build_cosine_warmup_scheduler(
+        #       optimiser, config.warmup_epochs, config.phase2_epochs,
+        #       config.min_lr, config.phase2_lr)
+
+        # TODO: early stopping state
+        #   patience_counter = 0
+        #   min_delta = 0.001
+        #   phase2_best_auroc = 0.0
+
+        # TODO: training loop
+        #   for epoch in range(start, config.phase2_epochs):
+        #       train_loss = self._train_one_epoch(optimiser)
+        #       val_loss, val_metrics = self._validate_one_epoch()
+        #       scheduler.step()
+        #
+        #       # early stopping check
+        #       # save last.pt every epoch (SLURM resume)
+        #       # save best.pt on improvement
+        #       # log via self.logger.log_epoch(...)
+        #       # break if patience exhausted
+
+        # TODO: RESUME FIX (before Phase 2 Ibex runs)
+        #   After constructing optimiser and scheduler above, check if
+        #   we're resuming and load:
+        #       optimiser.load_state_dict(checkpoint["optimiser_state_dict"])
+        #       scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+        #   Need to stash the checkpoint dict from _load_checkpoint for this.
+
+        raise NotImplementedError("Phase 2 — implement with other MLOps lead")
+
+    #  CORE LOOPS: shared by both phases
+    def _train_one_epoch(self, optimiser: AdamW) -> float:
+        """One training epoch. Returns average loss."""
+        self.model.train()
+        if self.metadata_head is not None:
+            self.metadata_head.train()
+
+        running_loss = 0.0
+        n_batches = 0
+
+        for batch in self.train_loader:
+            images = batch["image"].to(self.device, non_blocking=True)
+            labels = batch["label"].to(self.device, non_blocking=True)
+
+            logits = self._forward(batch, images)
+            loss = self.criterion(logits, labels)
+
+            optimiser.zero_grad()
+            loss.backward()
+            optimiser.step()
+
+            running_loss += loss.item()
+            n_batches += 1
+
+        return running_loss / max(n_batches, 1)
+
+    @torch.no_grad()
+    def _validate_one_epoch(self) -> tuple[float, dict]:
+        """One val epoch. Returns (avg_loss, metrics_dict)."""
+        self.model.eval()
+        if self.metadata_head is not None:
+            self.metadata_head.eval()
+
+        running_loss = 0.0
+        n_batches = 0
+        all_probs = []
+        all_labels = []
+
+        for batch in self.val_loader:
+            images = batch["image"].to(self.device, non_blocking=True)
+            labels = batch["label"].to(self.device, non_blocking=True)
+
+            logits = self._forward(batch, images)
+            loss = self.criterion(logits, labels)
+
+            running_loss += loss.item()
+            n_batches += 1
+
+            probs = torch.sigmoid(logits)
+            all_probs.append(probs.cpu().numpy())
+            all_labels.append(labels.cpu().numpy())
+
+        avg_loss = running_loss / max(n_batches, 1)
+        y_prob = np.concatenate(all_probs, axis=0).ravel()
+        y_true = np.concatenate(all_labels, axis=0).ravel()
+        metrics = compute_metrics(y_true, y_prob)
+
+        return avg_loss, metrics
+
+    #  FORWARD PASS: image-only vs metadata mode
+    def _forward(self, batch: dict, images: torch.Tensor) -> torch.Tensor:
+        """Routes to model(images) or get_features + metadata_head."""
+        if self.metadata_head is not None:
+            features = self.model.get_features(images)
+            metadata = batch["metadata"].to(self.device, non_blocking=True)
+            combined = torch.cat([features, metadata], dim=1)
+            return self.metadata_head(combined)
+        else:
+            return self.model(images)
+
+    #  CHECKPOINTING
+    def _save_checkpoint(
+        self, path: Path, epoch: int, phase: str,
+        optimiser: AdamW, scheduler: LambdaLR | None,
+        metrics: dict,
+    ) -> None:
+        """Save checkpoint with everything needed for exact resumption."""
+        checkpoint = {
+            "model_state_dict": self.model.state_dict(),
+            "optimiser_state_dict": optimiser.state_dict(),
+            "scheduler_state_dict": scheduler.state_dict() if scheduler else None,
+            "epoch": epoch,
+            "phase": phase,
+            "best_val_auroc": self.best_val_auroc,
+            "metrics": metrics,
+            "config": self.config.to_dict(),
+            "rng_states": get_rng_states(),
+        }
+        if self.metadata_head is not None and self.metadata_encoder is not None:
+            checkpoint["metadata_encoder"] = self.metadata_encoder.to_dict()
+            checkpoint["metadata_head_state_dict"] = self.metadata_head.state_dict()
+
+        torch.save(checkpoint, path)
+
+    def _load_checkpoint(self, path: str) -> None:
+        """Load checkpoint for resumption. See docstring RESUME NOTE."""
+        # TODO: stash checkpoint dict so _run_phase2 can restore optimiser
+        checkpoint = torch.load(path, map_location=self.device, weights_only=False)
+
+        self.model.load_state_dict(checkpoint["model_state_dict"])
+
+        if "metadata_head_state_dict" in checkpoint and self.metadata_head is not None:
+            self.metadata_head.load_state_dict(checkpoint["metadata_head_state_dict"])
+        if "metadata_encoder" in checkpoint and self.metadata_encoder is not None:
+            self.metadata_encoder = MetadataEncoder.from_dict(checkpoint["metadata_encoder"])
+
+        self.start_epoch = checkpoint["epoch"] + 1
+        self.start_phase = checkpoint["phase"]
+        self.best_val_auroc = checkpoint.get("best_val_auroc", 0.0)
+
+        if "rng_states" in checkpoint:
+            set_rng_states(checkpoint["rng_states"])
+
+    def _load_model_weights(self, path: Path) -> None:
+        """Load only model weights (for final eval with best.pt)."""
+        checkpoint = torch.load(path, map_location=self.device, weights_only=False)
+        self.model.load_state_dict(checkpoint["model_state_dict"])
+        if "metadata_head_state_dict" in checkpoint and self.metadata_head is not None:
+            self.metadata_head.load_state_dict(checkpoint["metadata_head_state_dict"])
+
+    #  FINAL EVALUATION
+    def _evaluate_final(self) -> dict:
+        """Run val fold with best checkpoint, save predictions CSV."""
+        # TODO: implement — see trainer_spec.py for exact contract
+        #   1. model.eval(), metadata_head.eval()
+        #   2. collect all predictions (probs, labels, patient_ids)
+        #   3. compute_metrics(y_true, y_prob)
+        #   4. save predictions CSV: patient_id, y_true, y_prob, y_pred
+        #   5. return metrics dict
+        raise NotImplementedError("Final evaluation — implement with other MLOps lead")

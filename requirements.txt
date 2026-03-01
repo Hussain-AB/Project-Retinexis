@@ -21,3 +21,6 @@ matplotlib
 
 # Testing
 pytest
+
+wandb
+PyYAML
