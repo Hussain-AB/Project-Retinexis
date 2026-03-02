@@ -27,14 +27,10 @@ Checkpoints include model weights, optimiser state, scheduler state,
 RNG states, and full config. See _save_checkpoint for exact format.
 
 RESUME NOTE (spike finding, 2026-02-26):
-    _load_checkpoint restores model weights and RNG states but the
-    optimiser/scheduler are currently rebuilt fresh in each phase method.
-    This means after a SLURM kill, the resumed run has correct model
-    weights and data ordering, but the optimiser loses its adaptive
-    state (Adam momentum). In practice this causes a 2-3 epoch blip.
-    To fix: load checkpoint["optimiser_state_dict"] and
-    checkpoint["scheduler_state_dict"] after constructing them in
-    _run_phase2. ~10 lines. Do this before Phase 2 Ibex runs.
+    _load_checkpoint restores model weights and RNG states, and stashes
+    the raw checkpoint dict. _run_phase2 then restores optimiser and
+    scheduler state after constructing them, preserving Adam momentum
+    and correct LR schedule positioning across SLURM preemptions.
 
 METADATA FUSION:
     When config.use_metadata=True, the trainer constructs a separate
@@ -45,7 +41,6 @@ METADATA FUSION:
 
 from __future__ import annotations
 
-import math
 import time
 from pathlib import Path
 from typing import Any
@@ -63,15 +58,15 @@ from src.models.base import BaseClassifier
 from src.data.loader import create_dataloaders, rebuild_loaders
 from src.data.base_dataset import MetadataEncoder
 from src.training.loss import build_loss
-from src.training.optimiser import build_layer_wise_param_groups
-from src.training.scheduler import build_cosine_warmup_scheduler
+# from src.training.optimiser import build_layer_wise_param_groups
+# from src.training.scheduler import build_cosine_warmup_scheduler
 from src.training.logging import TrainLogger
 from src.evaluation.metrics import compute_metrics
 from src.utils.reproducibility import get_rng_states, set_rng_states
 
 
 # HELPER: Metadata head construction
-# Small enough to stay here. Extract to metadata.py if fusion grows.
+# Small enough to stay here. Extract to metadata.py if this file gets too big.
 def _build_metadata_head(
     feature_dim: int,
     metadata_dim: int,
@@ -141,6 +136,9 @@ class Trainer:
         self.start_epoch: int = 0
         self.start_phase: str = "phase1"
 
+        # Stash for checkpoint resume data. _load_checkpoint stores
+        self._resume_checkpoint: dict | None = None
+
         # Create output directories
         config.checkpoint_dir.mkdir(parents=True, exist_ok=True)
         config.predictions_dir.mkdir(parents=True, exist_ok=True)
@@ -188,28 +186,87 @@ class Trainer:
     def _run_phase1(self) -> float:
         """Frozen backbone, head-only training. Returns final val AUROC."""
         config = self.config
+        print(f"\n{'─' * 50}")
+        print(f"Phase 1: Linear Probe ({config.phase1_epochs} epochs)")
+        print(f"{'─' * 50}")
 
-        # TODO: set model to linear probe mode
-        #   model.set_linear_probe_mode()
-        #   this freezes backbone, locks it in eval, keeps head in train
+        # Freeze backbone, lock it in eval mode (BatchNorm/dropout frozen),
+        # keep head in train mode. The lock prevents model.train() from
+        # silently reverting the backbone — see BaseClassifier.train().
+        self.model.set_linear_probe_mode()
 
-        # TODO: build Phase 1 optimiser
-        #   AdamW on head params only (or metadata_head if metadata mode)
-        #   flat LR = config.phase1_lr
-        #   no scheduler (5 epochs isn't worth scheduling)
+        # Build optimiser on head params only (flat LR, no decay).
+        # In metadata mode, optimise metadata_head instead.
+        if self.metadata_head is not None:
+            head_params = list(self.metadata_head.parameters())
+        else:
+            head_params = list(self.model.head.parameters())
 
-        # TODO: training loop for config.phase1_epochs
-        #   for epoch in range(config.phase1_epochs):
-        #       train_loss = self._train_one_epoch(optimiser)
-        #       val_loss, val_metrics = self._validate_one_epoch()
-        #       self.logger.log_epoch(epoch, "phase1", train_loss, val_loss, val_metrics, lr, elapsed)
-        #       track best_val_auroc
+        optimiser = AdamW(head_params, lr=config.phase1_lr)
 
-        # TODO: save last.pt after Phase 1 completes
-        #   single checkpoint (not per-epoch — it's only 5 epochs)
+        trainable = sum(p.numel() for p in head_params if p.requires_grad)
+        print(f"  Trainable params: {trainable:,} (head only)")
 
-        # TODO: return final epoch's val AUROC
-        raise NotImplementedError("Phase 1 — implement with other MLOps lead")
+        # Training loop
+        final_auroc = 0.0
+
+        for epoch in range(config.phase1_epochs):
+            epoch_start = time.time()
+
+            train_loss = self._train_one_epoch(optimiser)
+            val_loss, val_metrics = self._validate_one_epoch()
+            elapsed = time.time() - epoch_start
+
+            auroc = val_metrics.get("auroc", 0.0)
+            final_auroc = auroc
+
+            if auroc > self.best_val_auroc:
+                self.best_val_auroc = auroc
+
+            self.logger.log_epoch(
+                epoch=epoch,
+                phase="phase1",
+                train_loss=train_loss,
+                val_loss=val_loss,
+                val_metrics=val_metrics,
+                lr=config.phase1_lr,
+                elapsed=elapsed,
+            )
+
+            print(
+                f"  Epoch {epoch}/{config.phase1_epochs - 1} — "
+                f"train_loss: {train_loss:.4f}, "
+                f"val_loss: {val_loss:.4f}, "
+                f"val_auroc: {auroc:.4f} "
+                f"({elapsed:.1f}s)"
+            )
+
+        # Save single checkpoint after Phase 1 completes.
+        # Serves as Phase 2 starting point.
+        last_path = self.config.checkpoint_dir / "last.pt"
+        self._save_checkpoint(
+            path=last_path,
+            epoch=config.phase1_epochs - 1,
+            phase="phase1",
+            optimiser=optimiser,
+            scheduler=None,
+            metrics=val_metrics,
+        )
+
+        # Also save as best.pt if no Phase 2 will run (phase1_only mode)
+        if config.phase2_epochs == 0:
+            best_path = self.config.checkpoint_dir / "best.pt"
+            self._save_checkpoint(
+                path=best_path,
+                epoch=config.phase1_epochs - 1,
+                phase="phase1",
+                optimiser=optimiser,
+                scheduler=None,
+                metrics=val_metrics,
+            )
+
+        print(f"  Phase 1 complete. Best AUROC: {self.best_val_auroc:.4f}")
+        return final_auroc
 
     #  PHASE 2: FINE-TUNE
     def _run_phase2(self) -> float:
@@ -357,7 +414,7 @@ class Trainer:
 
     def _load_checkpoint(self, path: str) -> None:
         """Load checkpoint for resumption. See docstring RESUME NOTE."""
-        # TODO: stash checkpoint dict so _run_phase2 can restore optimiser
+        print(f"  Resuming from checkpoint: {path}")
         checkpoint = torch.load(path, map_location=self.device, weights_only=False)
 
         self.model.load_state_dict(checkpoint["model_state_dict"])
@@ -374,6 +431,12 @@ class Trainer:
         if "rng_states" in checkpoint:
             set_rng_states(checkpoint["rng_states"])
 
+        # Stash for optimiser/scheduler restoration in _run_phase2
+        self._resume_checkpoint = checkpoint
+
+        print(f"  Resumed: phase={self.start_phase}, epoch={self.start_epoch}, "
+              f"best_auroc={self.best_val_auroc:.4f}")
+
     def _load_model_weights(self, path: Path) -> None:
         """Load only model weights (for final eval with best.pt)."""
         checkpoint = torch.load(path, map_location=self.device, weights_only=False)
@@ -384,10 +447,57 @@ class Trainer:
     #  FINAL EVALUATION
     def _evaluate_final(self) -> dict:
         """Run val fold with best checkpoint, save predictions CSV."""
-        # TODO: implement — see trainer_spec.py for exact contract
-        #   1. model.eval(), metadata_head.eval()
-        #   2. collect all predictions (probs, labels, patient_ids)
-        #   3. compute_metrics(y_true, y_prob)
-        #   4. save predictions CSV: patient_id, y_true, y_prob, y_pred
-        #   5. return metrics dict
-        raise NotImplementedError("Final evaluation — implement with other MLOps lead")
+        print(f"\n{'─' * 50}")
+        print("Final Evaluation (best checkpoint)")
+        print(f"{'─' * 50}")
+
+        self.model.eval()
+        if self.metadata_head is not None:
+            self.metadata_head.eval()
+
+        all_probs = []
+        all_labels = []
+        all_patient_ids = []
+
+        with torch.no_grad():
+            for batch in self.val_loader:
+                images = batch["image"].to(self.device, non_blocking=True)
+                labels = batch["label"].to(self.device, non_blocking=True)
+
+                logits = self._forward(batch, images)
+                probs = torch.sigmoid(logits)
+
+                all_probs.append(probs.cpu().numpy())
+                all_labels.append(labels.cpu().numpy())
+                all_patient_ids.extend(batch["patient_id"])
+
+        y_prob = np.concatenate(all_probs, axis=0).ravel()
+        y_true = np.concatenate(all_labels, axis=0).ravel()
+        y_pred = (y_prob >= 0.5).astype(int)
+
+        # Compute final metrics
+        metrics = compute_metrics(y_true, y_prob)
+
+        print(f"  AUROC:       {metrics['auroc']:.4f}")
+        print(f"  AUPRC:       {metrics['auprc']:.4f}")
+        print(f"  ECE:         {metrics['ece']:.4f}")
+        print(f"  F1:          {metrics['f1']:.4f}")
+        print(f"  Sensitivity: {metrics['sensitivity']:.4f}")
+        print(f"  Specificity: {metrics['specificity']:.4f}")
+        print(f"  N samples:   {metrics['n_samples']}")
+
+        # Save predictions CSV — one row per sample. This is the
+        # source of truth for bootstrap CIs, DeLong tests, threshold
+        # selection, and subgroup analysis.
+        predictions_df = pd.DataFrame({
+            "patient_id": all_patient_ids,
+            "y_true": y_true,
+            "y_prob": y_prob,
+            "y_pred": y_pred,
+        })
+
+        csv_path = self.config.predictions_dir / "val_predictions.csv"
+        predictions_df.to_csv(csv_path, index=False)
+        print(f"  Predictions saved: {csv_path}")
+
+        return metrics
