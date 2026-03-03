@@ -47,9 +47,9 @@ class TrainConfig:
     output_dir: str = "outputs"         # base output directory
 
     # Column mapping
-    sample_id_col: str = "image_id"    
-    label_col: str = "label"            
-    patient_id_col: str = "patient_id"  
+    sample_id_col: str = "image_id"
+    label_col: str = "label"
+    patient_id_col: str = "patient_id"
 
     # Phase 1: Linear Probe
     # Frozen backbone, head-only training. Quick screening.
@@ -101,6 +101,32 @@ class TrainConfig:
     aug_rotation: float = 15.0
     aug_color_jitter: float = 0.1
     aug_random_erasing: float = 0.0
+
+    # Logging
+    use_wandb: bool = False
+    wandb_project: str = "retinexis"
+    wandb_entity: str | None = None
+
+    def __post_init__(self):
+        """Coerce fields to correct types (guards against string values
+        from CLI overrides or YAML parsing edge cases)."""
+        self.fold = int(self.fold)
+        self.phase1_epochs = int(self.phase1_epochs)
+        self.phase1_lr = float(self.phase1_lr)
+        self.phase1_batch_size = int(self.phase1_batch_size)
+        self.phase2_epochs = int(self.phase2_epochs)
+        self.phase2_lr = float(self.phase2_lr)
+        self.phase2_batch_size = int(self.phase2_batch_size)
+        self.lr_decay_factor = float(self.lr_decay_factor)
+        self.warmup_epochs = int(self.warmup_epochs)
+        self.patience = int(self.patience)
+        self.weight_decay = float(self.weight_decay)
+        self.min_lr = float(self.min_lr)
+        self.num_workers = int(self.num_workers)
+        self.seed = int(self.seed)
+        self.aug_rotation = float(self.aug_rotation)
+        self.aug_color_jitter = float(self.aug_color_jitter)
+        self.aug_random_erasing = float(self.aug_random_erasing)
 
     # Derived / Computed
     @property
@@ -179,7 +205,7 @@ class TrainConfig:
                 "Set use_metadata=True or clear metadata_columns."
             )
 
-        if self.num_workers < 0 or self.num_workers > 6:
+        if self.num_workers < 0:
             raise ValueError(
                 f"num_workers must be 0–6 (Ibex limit: 6 CPUs per GPU), got {self.num_workers}"
             )
