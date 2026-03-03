@@ -336,7 +336,8 @@ class Trainer:
         running_loss = 0.0
         n_batches = 0
 
-        for batch in tqdm(self.train_loader, desc="  Train", leave=False):
+        pbar = tqdm(self.train_loader, desc="  Train", leave=False)
+        for batch in pbar:
             images = batch["image"].to(self.device, non_blocking=True)
             labels = batch["label"].to(self.device, non_blocking=True)
 
@@ -349,6 +350,7 @@ class Trainer:
 
             running_loss += loss.item()
             n_batches += 1
+            pbar.set_postfix(loss=f"{running_loss / n_batches:.4f}")
 
         return running_loss / max(n_batches, 1)
 
@@ -364,7 +366,8 @@ class Trainer:
         all_probs = []
         all_labels = []
 
-        for batch in tqdm(self.val_loader, desc="  Val  ", leave=False):
+        pbar = tqdm(self.val_loader, desc="  Val  ", leave=False)
+        for batch in pbar:
             images = batch["image"].to(self.device, non_blocking=True)
             labels = batch["label"].to(self.device, non_blocking=True)
 
@@ -373,6 +376,7 @@ class Trainer:
 
             running_loss += loss.item()
             n_batches += 1
+            pbar.set_postfix(loss=f"{running_loss / n_batches:.4f}")
 
             probs = torch.sigmoid(logits)
             all_probs.append(probs.cpu().numpy())
