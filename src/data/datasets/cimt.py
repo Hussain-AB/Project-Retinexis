@@ -12,7 +12,8 @@ class CIMTDataset(BaseRetinalDataset):
     def __getitem__(self, idx: int) -> SampleDict:
         row = self.df.iloc[idx]
 
-        image_path = self.image_dir / row["image_path"]  # change column name as needed
+        filename = row.get("filename") or row.get("image_filename")
+        image_path = self.image_dir / filename
         image = Image.open(image_path).convert("RGB")
         image = self.transform(image)
 
