@@ -52,6 +52,7 @@ import torch.nn as nn
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import LambdaLR
 from torch.utils.data import DataLoader
+from tqdm import tqdm
 
 from src.config.schema import TrainConfig
 from src.models.base import BaseClassifier
@@ -328,7 +329,7 @@ class Trainer:
         running_loss = 0.0
         n_batches = 0
 
-        for batch in self.train_loader:
+        for batch in tqdm(self.train_loader, desc="  Train", leave=False):
             images = batch["image"].to(self.device, non_blocking=True)
             labels = batch["label"].to(self.device, non_blocking=True)
 
@@ -356,7 +357,7 @@ class Trainer:
         all_probs = []
         all_labels = []
 
-        for batch in self.val_loader:
+        for batch in tqdm(self.val_loader, desc="  Val  ", leave=False):
             images = batch["image"].to(self.device, non_blocking=True)
             labels = batch["label"].to(self.device, non_blocking=True)
 
