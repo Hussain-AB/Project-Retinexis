@@ -18,6 +18,7 @@ import time
 from pathlib import Path
 
 import torch
+import warnings
 
 # Make src/ importable
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -93,6 +94,7 @@ def select_device() -> torch.device:
 
 
 def main() -> None:
+    warnings.filterwarnings("ignore", message=".*pin_memory.*")
     args = parse_args()
     overrides = build_overrides(args)
 
