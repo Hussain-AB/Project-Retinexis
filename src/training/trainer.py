@@ -128,6 +128,11 @@ class Trainer:
             device=device,
         )
 
+        # Create output directories (must happen before logger)
+        config.checkpoint_dir.mkdir(parents=True, exist_ok=True)
+        config.predictions_dir.mkdir(parents=True, exist_ok=True)
+        config.log_dir.mkdir(parents=True, exist_ok=True)
+
         # Logger (CSV always, W&B if enabled)
         self.logger = TrainLogger(config)
 
@@ -138,11 +143,6 @@ class Trainer:
 
         # Stash for checkpoint resume data. _load_checkpoint stores
         self._resume_checkpoint: dict | None = None
-
-        # Create output directories
-        config.checkpoint_dir.mkdir(parents=True, exist_ok=True)
-        config.predictions_dir.mkdir(parents=True, exist_ok=True)
-        config.log_dir.mkdir(parents=True, exist_ok=True)
 
         # Save resolved config (exists even if job is killed)
         config.save(config.run_dir / "config_resolved.yaml")
