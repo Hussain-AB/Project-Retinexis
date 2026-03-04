@@ -11,10 +11,10 @@ model_kwargs:
   drop_rate: 0.3
 
 # Paths
-# On Ibex: /ibex/user/$USER/data/cimt/
-# Locally: adjust to your machine
-data_dir: /ibex/user/$USER/data/cimt/images
-labels_csv: /ibex/user/$USER/data/cimt/labels.csv
+# Default to the notebook-generated preprocessed CIMT assets in this repo.
+# Override via CLI if your cluster stores data elsewhere.
+data_dir: data/cimt/Fundus_CIMT_2903_Dataset/images_preprocessed
+labels_csv: data/cimt/Fundus_CIMT_2903_Dataset/metadata_processed/processed_metadata.csv
 splits_file: tasks/cimt/splits/cimt_5fold_splits.json
 output_dir: outputs
 
