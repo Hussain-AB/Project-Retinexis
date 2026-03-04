@@ -12,16 +12,13 @@ _EXPECTED_KWARGS: dict[str, set[str]] = {
         "num_classes",
         "pretrained",
         "pool",
-        "combine",
         "input_size_override",
-        "linear_probe",
     },
     "dinov3": {
         "variant",
         "num_classes",
         "pretrained",
         "pool",
-        "linear_probe",
         "input_size_override",
     },
     
@@ -47,6 +44,14 @@ _EXPECTED_KWARGS: dict[str, set[str]] = {
         "pretrained", 
         "drop_rate", 
         "input_size_override",
+    },
+    "retfound_dinov2": {
+        "pretrained",
+    },
+    "retfound_green": {
+        "pretrained",
+        "drop_path_rate",
+        "cache_dir",
     },
 }
 

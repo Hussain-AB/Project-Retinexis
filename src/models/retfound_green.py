@@ -27,8 +27,8 @@ logger = logging.getLogger(__name__)
 
 # RETFound-Green uses 0.5 normalisation, NOT ImageNet stats
 _RETFOUND_GREEN_NORM = {
-    "mean": [0.5, 0.5, 0.5],
-    "std":  [0.5, 0.5, 0.5],
+    "mean": (0.5, 0.5, 0.5),  # review: must be tuples — PreprocessingConfig is a frozen dataclass
+    "std":  (0.5, 0.5, 0.5),
 }
 
 _INPUT_SIZE = 392
@@ -118,5 +118,5 @@ class RETFoundGreenClassifier(BaseClassifier):
             input_size = self._input_size,
             mean = _RETFOUND_GREEN_NORM["mean"],
             std = _RETFOUND_GREEN_NORM["std"],
-            crop_strategy="pad_resize"
+            crop_strategy="pad_to_square"  # review: was "pad_resize" which isn't a valid strategy in transforms.py
         )

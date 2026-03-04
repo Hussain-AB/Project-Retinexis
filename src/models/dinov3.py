@@ -19,6 +19,12 @@ from .base import BaseClassifier, PreprocessingConfig
 
 
 _DINOV3_LARGE_MODEL_ID = "facebook/dinov3-vitl16-pretrain-lvd1689m"
+# review: fallback defaults used only when pretrained=False to avoid gated
+# Hugging Face metadata/config fetches during tests.
+_DINOV3_FALLBACK_MODEL_TYPE = "dinov2"
+_DINOV3_FALLBACK_INPUT_SIZE = 224
+_DINOV3_FALLBACK_MEAN = (0.485, 0.456, 0.406)
+_DINOV3_FALLBACK_STD = (0.229, 0.224, 0.225)
 
 VARIANT_CONFIG = {
     "large": {
@@ -34,7 +40,7 @@ class DINOv3Classifier(BaseClassifier):
         num_classes: int = 1,
         pretrained: bool = True,
         pool: str = "cls",
-        linear_probe: bool = True,
+        # review: removed linear_probe param — trainer calls set_linear_probe_mode()
         input_size_override: int | None = None,
     ) -> None:
         super().__init__()
@@ -55,29 +61,39 @@ class DINOv3Classifier(BaseClassifier):
         config = VARIANT_CONFIG[variant]
         self._pool = pool
 
-        processor = AutoImageProcessor.from_pretrained(config["model_id"])
-        self._norm_mean = tuple(processor.image_mean)
-        self._norm_std = tuple(processor.image_std)
-        size = processor.size
-        processor_size = size.get("height") or size.get("shortest_edge", 224)
-        self._input_size = input_size_override or processor_size
+        if pretrained:
+            processor = AutoImageProcessor.from_pretrained(config["model_id"])
+            self._norm_mean = tuple(processor.image_mean)
+            self._norm_std = tuple(processor.image_std)
+            size = processor.size
+            processor_size = size.get("height") or size.get("shortest_edge", _DINOV3_FALLBACK_INPUT_SIZE)
+            self._input_size = input_size_override or processor_size
+        else:
+            # review: keep pretrained=False fully local/offline — no HF hub calls
+            # for processor metadata when running constructor-only tests.
+            self._norm_mean = _DINOV3_FALLBACK_MEAN
+            self._norm_std = _DINOV3_FALLBACK_STD
+            self._input_size = input_size_override or _DINOV3_FALLBACK_INPUT_SIZE
 
         self._backbone = self._load_backbone(
             model_id=config["model_id"],
             pretrained=pretrained,
+            input_size=self._input_size,
         )
         self._feature_dim = self._backbone.config.hidden_size
 
         self._head = nn.Linear(self._feature_dim, 1)
 
-        if linear_probe:
-            self.set_linear_probe_mode()
+        # review: removed auto linear_probe — trainer owns mode switching
 
     @staticmethod
-    def _load_backbone(model_id: str, pretrained: bool) -> nn.Module:
+    def _load_backbone(model_id: str, pretrained: bool, input_size: int) -> nn.Module:
         if pretrained:
             return AutoModel.from_pretrained(model_id)
-        hf_config = AutoConfig.from_pretrained(model_id)
+        # review: build config locally for pretrained=False to avoid gated
+        # repo access from AutoConfig.from_pretrained(model_id).
+        hf_config = AutoConfig.for_model(_DINOV3_FALLBACK_MODEL_TYPE)
+        hf_config.image_size = input_size
         return AutoModel.from_config(hf_config)
 
     def _encode(self, x: torch.Tensor) -> torch.Tensor:
@@ -97,9 +113,8 @@ class DINOv3Classifier(BaseClassifier):
         return logits
 
     def get_features(self, x: torch.Tensor) -> torch.Tensor:
-        if all(not p.requires_grad for p in self._backbone.parameters()):
-            with torch.no_grad():
-                return self._encode(x)
+        # review: removed manual no_grad — trainer handles eval context,
+        # this blocks gradient flow during Phase 2 fine-tuning
         return self._encode(x)
 
     @property
