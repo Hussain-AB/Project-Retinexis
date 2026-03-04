@@ -98,8 +98,15 @@ class TrainConfig:
 
     # Augmentation
     aug_hflip: bool = True
-    aug_rotation: float = 15.0
-    aug_color_jitter: float = 0.1
+    aug_rotation: float = 10.0
+    aug_scale_min: float = 0.98
+    aug_scale_max: float = 1.02
+    aug_brightness: float = 0.05
+    aug_contrast: float = 0.05
+    aug_saturation: float = 0.0
+    aug_hue: float = 0.0
+    aug_blur_prob: float = 0.4
+    aug_blur_limit: int = 3
     aug_random_erasing: float = 0.0
 
     # Logging
@@ -125,7 +132,14 @@ class TrainConfig:
         self.num_workers = int(self.num_workers)
         self.seed = int(self.seed)
         self.aug_rotation = float(self.aug_rotation)
-        self.aug_color_jitter = float(self.aug_color_jitter)
+        self.aug_scale_min = float(self.aug_scale_min)
+        self.aug_scale_max = float(self.aug_scale_max)
+        self.aug_brightness = float(self.aug_brightness)
+        self.aug_contrast = float(self.aug_contrast)
+        self.aug_saturation = float(self.aug_saturation)
+        self.aug_hue = float(self.aug_hue)
+        self.aug_blur_prob = float(self.aug_blur_prob)
+        self.aug_blur_limit = int(self.aug_blur_limit)
         self.aug_random_erasing = float(self.aug_random_erasing)
 
     # Derived / Computed

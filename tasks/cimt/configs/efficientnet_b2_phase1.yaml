@@ -60,14 +60,18 @@ pin_memory: true
 persistent_workers: true
 prefetch_factor: 2
 
-# Augmentation
-# Conservative defaults per EDA findings (512x512 square images,
-# moderate quality variability, no evidence heavy aug helps).
-# Keep hue jitter low — fundus colour is clinically meaningful.
+# Augmentation — aligned with CIMT data prep notebook
 aug_hflip: true
-aug_rotation: 15
-aug_color_jitter: 0.1
-aug_random_erasing: 0.0    # off — retinal vessel patterns are fine-grained
+aug_rotation: 10
+aug_scale_min: 0.98
+aug_scale_max: 1.02
+aug_brightness: 0.05
+aug_contrast: 0.05
+aug_saturation: 0.0
+aug_hue: 0.0
+aug_blur_prob: 0.4
+aug_blur_limit: 3
+aug_random_erasing: 0.0
 
 # Reproducibility
 seed: 42
