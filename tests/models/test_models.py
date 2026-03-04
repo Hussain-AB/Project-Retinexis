@@ -18,6 +18,7 @@ separate file like test_efficientnet.py.
 
 from __future__ import annotations
 
+import inspect
 import pytest
 import torch
 import torch.nn as nn
@@ -130,25 +131,20 @@ class TestForwardPass:
         )
 
     def test_output_is_raw_logits(self, model_and_name):
-        """Output should be unbounded — no sigmoid applied.
-
-        NOTE: This can false-positive for ViTs with pretrained=False.
-        Random ViT weights + LayerNorm collapse outputs to near-identical
-        values that happen to land in [0,1]. This is not sigmoid — it's
-        feature collapse. If you see a tight cluster of identical values
-        (e.g. all ~0.14), that's expected. A real sigmoid failure would
-        show outputs spread across [0,1] but never exceeding it.
-        """
+        """Output should be raw logits, i.e. no sigmoid/softmax in forward path."""
         name, model = model_and_name
         model.eval()
-        # Large random input to push outputs away from 0-1
-        size = model.preprocessing_config.input_size
-        x = torch.randn(8, 3, size, size) * 10
-        with torch.no_grad():
-            logits = model(x)
-        assert logits.min() < 0 or logits.max() > 1, (
-            f"'{name}' logits suspiciously bounded to [0,1] — "
-            f"might be applying sigmoid in forward()"
+
+        forbidden_modules = (nn.Sigmoid, nn.Softmax, nn.LogSoftmax)
+        found = [m.__class__.__name__ for m in model.modules() if isinstance(m, forbidden_modules)]
+        assert not found, (
+            f"'{name}' contains output activation module(s): {found}. "
+            "Model forward should return raw logits."
+        )
+
+        forward_source = inspect.getsource(type(model).forward).lower()
+        assert "sigmoid(" not in forward_source and "softmax(" not in forward_source, (
+            f"'{name}'.forward appears to apply a bounded activation."
         )
 
     def test_output_is_finite(self, model_and_name):
