@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 class RETFoundMAEClassifier(BaseClassifier):
     def __init__(
         self,
+        pretrained: bool = True,  # review: added — test_models.py passes pretrained=False, factory expects it
         weights_path: str | None = None,
         input_size: int = 224,
         drop_path_rate: float = 0.1,
@@ -50,7 +51,7 @@ class RETFoundMAEClassifier(BaseClassifier):
         
         self._head = nn.Linear(self._feature_dim, 1)
         
-        if weights_path is not None:
+        if pretrained and weights_path is not None:  # review: gate on pretrained flag
             self._load_pretrained_weights(weights_path)
             
         if self._input_size != 224:

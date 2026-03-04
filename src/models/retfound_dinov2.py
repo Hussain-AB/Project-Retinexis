@@ -14,14 +14,17 @@ from .base import BaseClassifier, PreprocessingConfig, IMAGENET_NORM
 
 # create the class
 class RETFoundDINOv2(BaseClassifier):
-    def __init__(self, pretrained=True, **kwargs):
+    def __init__(self, pretrained=True):  # review: removed **kwargs — factory validates kwargs, swallowing them hides typos
         super().__init__()
 
-        # Download the .pth weights from HuggingFace (auto-cached after first download)
-        weights_path = hf_hub_download(
-            repo_id="YukunZhou/RETFound_dinov2_meh",
-            filename="RETFound_dinov2_meh.pth",
-        )
+        # review: gate weight download on pretrained flag — test_models.py
+        # passes pretrained=False, which would fail without this guard
+        weights_path = ""
+        if pretrained:
+            weights_path = hf_hub_download(
+                repo_id="YukunZhou/RETFound_dinov2_meh",
+                filename="RETFound_dinov2_meh.pth",
+            )
 
         # Create DINOv2 ViT-Large/14 architecture and load retinal weights
         # num_classes=0 removes the default head (we add our own)
@@ -64,7 +67,7 @@ class RETFoundDINOv2(BaseClassifier):
             input_size=224,
             mean=IMAGENET_NORM["mean"],
             std=IMAGENET_NORM["std"],
-            crop_strategy="center",
+            crop_strategy="pad_to_square",  # review: was "center" which isn't a valid strategy in transforms.py
         )
 
     # required methods

@@ -31,8 +31,7 @@ class DINOv2Classifier(BaseClassifier):
         pretrained: bool = True,
         pool: str = "cls",
         input_size_override: int | None = None,
-        linear_probe: bool = True,
-    ) -> None:
+    ) -> None:  # review: removed linear_probe — trainer calls set_linear_probe_mode(), not the model
         super().__init__()
 
         if variant not in VARIANT_CONFIG:
@@ -60,8 +59,7 @@ class DINOv2Classifier(BaseClassifier):
 
         self._head = nn.Linear(self._feature_dim, 1)
 
-        if linear_probe:
-            self.set_linear_probe_mode()
+        # review: removed auto linear_probe — trainer owns mode switching
 
     @staticmethod
     def _load_backbone(model_name: str, pretrained: bool) -> nn.Module:
@@ -95,16 +93,9 @@ class DINOv2Classifier(BaseClassifier):
         self,
         x: torch.Tensor,
     ) -> torch.Tensor:
-        images = x
-        if images.ndim != 4:
-            raise ValueError("Expected input tensor with shape (B, C, H, W).")
-
-        if all(not p.requires_grad for p in self._backbone.parameters()):
-            with torch.no_grad():
-                features = self._encode_single(images)
-        else:
-            features = self._encode_single(images)
-        return features
+        # review: removed manual no_grad guard — trainer handles eval context,
+        # and this blocks gradient flow during Phase 2 fine-tuning
+        return self._encode_single(x)
 
     @property
     def backbone(self) -> nn.Module:
