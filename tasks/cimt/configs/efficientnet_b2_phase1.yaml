@@ -1,0 +1,79 @@
+# EfficientNet-B2 Phase 1 (Linear Probe) — CIMT Dataset
+# Template config. Copy and modify for other models/datasets.
+# CLI overrides: python scripts/train.py --config THIS FILE --fold 0
+
+# Identity
+dataset: cimt
+architecture: efficientnet
+model_kwargs:
+  variant: b2
+  pretrained: true
+  drop_rate: 0.3
+
+# Paths
+# On Ibex: /ibex/user/$USER/data/cimt/
+# Locally: adjust to your machine
+data_dir: /ibex/user/$USER/data/cimt/images
+labels_csv: /ibex/user/$USER/data/cimt/labels.csv
+splits_file: tasks/cimt/splits/cimt_5fold_splits.json
+output_dir: outputs
+
+# Column mapping
+sample_id_col: image_id
+label_col: label
+patient_id_col: patient_id
+
+# Cross-validation
+fold: 0    # override with --fold N
+
+# Phase 1: Linear Probe
+phase1_epochs: 5
+phase1_lr: 1e-3
+phase1_batch_size: 64
+
+# Phase 2: Fine-tune (this is here for reference)
+# phase2_epochs: 50
+# phase2_lr: 1e-4
+# phase2_batch_size: 32
+# lr_decay_factor: 0.65
+# warmup_epochs: 5
+# patience: 7
+# weight_decay: 0.05
+# min_lr: 1e-6
+
+# Loss
+# Starting unweighted. See loss.py header for rationale.
+# CIMT is 70.75% positive — AUROC is threshold-invariant so
+# weighting doesn't help ranking. Revisit if calibration matters.
+use_weighted_bce: false
+pos_weight: null
+
+# Metadata (disabled for image-only baseline)
+use_metadata: false
+metadata_columns: []
+metadata_head_hidden: 0
+
+# Data loading
+# Ibex: max 6 CPUs per GPU. Keep GPU util > 15% or job gets killed.
+num_workers: 4
+pin_memory: true
+persistent_workers: true
+prefetch_factor: 2
+
+# Augmentation
+# Conservative defaults per EDA findings (512x512 square images,
+# moderate quality variability, no evidence heavy aug helps).
+# Keep hue jitter low — fundus colour is clinically meaningful.
+aug_hflip: true
+aug_rotation: 15
+aug_color_jitter: 0.1
+aug_random_erasing: 0.0    # off — retinal vessel patterns are fine-grained
+
+# Reproducibility
+seed: 42
+deterministic: true
+
+# Logging
+use_wandb: true
+wandb_project: retinexis
+wandb_entity: project_retinexis-king-s-college-london
