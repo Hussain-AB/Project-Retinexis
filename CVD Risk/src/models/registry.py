@@ -4,6 +4,7 @@ from .dinov3 import DINOv3Classifier
 from .resnet import ResNetClassifier
 from .seresnext import SEResNeXtClassifier
 from .convnextv2 import ConvNeXtV2Classifier
+from .retfound_dinov2 import RETFoundDINOv2
 from .retfound_green import RETFoundGreenClassifier
 
 MODEL_REGISTRY: dict[str, type] = {
@@ -13,5 +14,6 @@ MODEL_REGISTRY: dict[str, type] = {
     "resnet": ResNetClassifier,
     "seresnext": SEResNeXtClassifier,
     "convnextv2": ConvNeXtV2Classifier,
+    "retfound_dinov2": RETFoundDINOv2,
     "retfound_green": RETFoundGreenClassifier,
 }
