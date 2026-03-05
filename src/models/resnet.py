@@ -36,7 +36,7 @@ class ResNetClassifier(BaseClassifier):
 
         config = VARIANT_CONFIG[variant]
         self._feature_dim = config["feature_dim"]
-        self._input_size = input_size_override or config["input_size"]
+        self._input_size = input_size_override if input_size_override is not None else config["input_size"]
 
         self._backbone = timm.create_model(
             config["model_name"],
