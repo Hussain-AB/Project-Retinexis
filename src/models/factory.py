@@ -53,6 +53,13 @@ _EXPECTED_KWARGS: dict[str, set[str]] = {
         "drop_path_rate",
         "cache_dir",
     },
+    "retfound_mae": {
+        "pretrained",
+        "weights_path",
+        "input_size",
+        "drop_path_rate",
+        "global_pool",
+    },
 }
 
 def create_model(architecture: str, **kwargs) -> BaseClassifier:

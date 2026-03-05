@@ -6,6 +6,7 @@ from .seresnext import SEResNeXtClassifier
 from .convnextv2 import ConvNeXtV2Classifier
 from .retfound_dinov2 import RETFoundDINOv2
 from .retfound_green import RETFoundGreenClassifier
+from .retfound_mae import RETFoundMAEClassifier
 
 MODEL_REGISTRY: dict[str, type] = {
     "efficientnet": EfficientNetClassifier,
@@ -16,4 +17,5 @@ MODEL_REGISTRY: dict[str, type] = {
     "convnextv2": ConvNeXtV2Classifier,
     "retfound_dinov2": RETFoundDINOv2,
     "retfound_green": RETFoundGreenClassifier,
+    "retfound_mae": RETFoundMAEClassifier,
 }

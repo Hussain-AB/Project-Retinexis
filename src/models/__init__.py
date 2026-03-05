@@ -6,6 +6,7 @@ from .resnet import ResNetClassifier
 from .seresnext import SEResNeXtClassifier
 from .convnextv2 import ConvNeXtV2Classifier
 from .retfound_dinov2 import RETFoundDINOv2
+from .retfound_mae import RETFoundMAEClassifier
 from .factory import create_model
 from .registry import MODEL_REGISTRY
 
@@ -19,6 +20,7 @@ __all__ = [
     "SEResNeXtClassifier",
     "ConvNeXtV2Classifier",
     "RETFoundDINOv2",
+    "RETFoundMAEClassifier",
     "create_model",
     "MODEL_REGISTRY",
 ]
