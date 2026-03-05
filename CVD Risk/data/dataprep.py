@@ -165,7 +165,7 @@ class MetadataProcessor:
         print(f"Metadata saved to: {output_dir}")
 
 
-# ── Augmentation (for training use, not baked into preprocessed images) ───────
+# ── Augmentation ───────
 
 def get_train_augmentation():
     """Returns an albumentations transform for use in a training DataLoader."""
