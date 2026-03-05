@@ -23,7 +23,8 @@ from .base import BaseClassifier, PreprocessingConfig, IMAGENET_NORM
 
 # Variant configuration
 VARIANT_CONFIG = {
-    "convnextv2_base": {"model_name": "convnextv2_base", "feature_dim": 1024, "input_size": 224},
+    "convnextv2_base":  {"model_name": "convnextv2_base",  "feature_dim": 1024, "input_size": 224},
+    "convnextv2_large": {"model_name": "convnextv2_large", "feature_dim": 1536, "input_size": 224},
 }
 
 class ConvNeXtV2Classifier(BaseClassifier):
