@@ -5,6 +5,7 @@
 #SBATCH --nodes=1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
+#SBATCH --gpus=4
 #SBATCH --gres=gpu:a100:1 # Request an A100 GPU
 #SBATCH --time=24:00:00 # Depending on training length, adjust time up to 72 hours for long jobs
 
@@ -37,3 +38,4 @@ echo "Running training script..."
 python path/to/train_script.py --save_dir "$SAVE_DIR"
 
 echo "Training finished successfully!"
+
