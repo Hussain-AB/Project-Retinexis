@@ -39,10 +39,10 @@ _EXPECTED_KWARGS: dict[str, set[str]] = {
     },
     
     "convnextv2": {
-        "variant", 
-        "num_classes", 
-        "pretrained", 
-        "drop_rate", 
+        "variant",
+        "num_classes",
+        "pretrained",
+        "drop_path_rate",
         "input_size_override",
     },
     "retfound_dinov2": {
