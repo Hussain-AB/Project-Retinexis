@@ -17,7 +17,7 @@ class ConvNeXtV2Classifier(BaseClassifier):
         variant: str = "convnextv2_base",
         num_classes: int = 1,
         pretrained: bool = True,
-        drop_rate: float = 0.0,
+        drop_path_rate: float = 0.0,
         input_size_override: int | None = None,
     ) -> None:
         super().__init__()
@@ -42,7 +42,7 @@ class ConvNeXtV2Classifier(BaseClassifier):
             config["model_name"],
             pretrained=pretrained,
             num_classes=0,
-            drop_rate=drop_rate,
+            drop_path_rate=drop_path_rate,
         )
 
         self._head = nn.Linear(self._feature_dim, 1)
