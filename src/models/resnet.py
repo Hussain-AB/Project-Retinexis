@@ -1,3 +1,12 @@
+"""
+resnet — ResNet-50 classifier for retinal fundus images.
+
+Universal baseline. ~25M params. Feature dim 2048. Anchors results to
+the broader literature and represents the approach used in earlier BRSET
+work before ConvNeXt V2 superseded it (Nakayama et al. 2024).
+
+"""
+
 from __future__ import annotations
 
 import torch

@@ -1,3 +1,18 @@
+"""
+convnextv2 — ConvNeXt V2 classifier for retinal fundus images.
+
+BRSET literature baseline (Nakayama et al. 2024). Modern pure-CNN
+architecture, ~89M params (Base). Feature dim 1024. Outperformed
+ResNet-50 on the original BRSET benchmark. Also serves as the
+"modern CNN vs ViT" comparison — capacity-matched to DINOv2-ViT-B
+at 86M params.
+
+Regularisation note: ConvNeXt V2 uses stochastic depth (drop_path_rate),
+not standard dropout. drop_path_rate is passed directly to timm and
+applied throughout the backbone at training time.
+
+"""
+
 from __future__ import annotations
 
 import torch
