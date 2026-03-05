@@ -1,0 +1,66 @@
+# DINOv2-Large Phase 1 (Linear Probe) — CIMT Dataset
+# Generalist foundation model. ViT-Large/14, 304M params.
+# No retinal data in pretraining — tests whether generalist features suffice.
+
+# Identity
+dataset: cimt
+architecture: dinov2
+model_kwargs:
+  variant: large
+  pretrained: true
+
+# Paths
+data_dir: data/cimt/Fundus_CIMT_2903_Dataset/images_preprocessed
+labels_csv: data/cimt/Fundus_CIMT_2903_Dataset/metadata_processed/processed_metadata.csv
+splits_file: tasks/cimt/splits/cimt_5fold_splits.json
+output_dir: outputs
+
+# Column mapping
+sample_id_col: image_id
+label_col: label
+patient_id_col: patient_id
+
+# Cross-validation
+fold: 0
+
+# Phase 1: Linear Probe
+phase1_epochs: 5
+phase1_lr: 1e-3
+phase1_batch_size: 64
+
+# Loss
+use_weighted_bce: false
+pos_weight: null
+
+# Metadata
+use_metadata: false
+metadata_columns: []
+metadata_head_hidden: 0
+
+# Data loading
+num_workers: 4
+pin_memory: true
+persistent_workers: true
+prefetch_factor: 2
+
+# Augmentation
+aug_hflip: true
+aug_rotation: 10
+aug_scale_min: 0.98
+aug_scale_max: 1.02
+aug_brightness: 0.05
+aug_contrast: 0.05
+aug_saturation: 0.0
+aug_hue: 0.0
+aug_blur_prob: 0.4
+aug_blur_limit: 3
+aug_random_erasing: 0.0
+
+# Reproducibility
+seed: 42
+deterministic: true
+
+# Logging
+use_wandb: true
+wandb_project: retinexis
+wandb_entity: project_retinexis-king-s-college-london
