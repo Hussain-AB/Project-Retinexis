@@ -1,4 +1,4 @@
-# Python 3.10.x
+# Python 3.12.1
 
 # Core
 torch
@@ -6,12 +6,19 @@ torchvision
 timm==1.0.3
 transformers
 huggingface_hub
+accelerate
+safetensors
 
 # Data & numerics
 numpy
 pandas
 Pillow
 albumentations
+opencv-python
+einops
+
+# Datasets
+datasets
 
 # Training
 optuna
@@ -21,9 +28,16 @@ tqdm
 scikit-learn
 scipy
 matplotlib
+torchmetrics
+
+# Logging
+wandb
+
+# Config
+PyYAML
 
 # Testing
 pytest
 
-wandb
-PyYAML
+# Notebook
+jupyter
