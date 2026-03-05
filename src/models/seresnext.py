@@ -33,6 +33,12 @@ class SEResNeXtClassifier(BaseClassifier):
     ) -> None:
         super().__init__()
 
+        if num_classes != 1:
+            raise ValueError(
+                "BaseClassifier enforces binary logits with shape (B, 1); "
+                f"received num_classes={num_classes}."
+            )
+
         if variant not in VARIANT_CONFIG:
             raise ValueError(
                 f"Unknown variant '{variant}'. "
