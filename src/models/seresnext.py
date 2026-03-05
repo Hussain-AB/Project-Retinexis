@@ -53,10 +53,12 @@ class SEResNeXtClassifier(BaseClassifier):
             config["model_name"],
             pretrained=pretrained,
             num_classes=0,
-            drop_rate=drop_rate,
         )
 
-        self._head = nn.Linear(self._feature_dim, 1)
+        self._head = nn.Sequential(
+            nn.Dropout(p=drop_rate),
+            nn.Linear(self._feature_dim, 1),
+        )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         features = self._backbone(x)
