@@ -6,7 +6,7 @@
 #SBATCH --nodes=1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
-#SBATCH --gres=gpu:a100:4 # Request an A100 GPU
+#SBATCH --gpus=4
 #SBATCH --time=24:00:00 # Depending on training length, adjust time up to 72 hours for long jobs
 
 # Ensure we fail fast if any command fails
