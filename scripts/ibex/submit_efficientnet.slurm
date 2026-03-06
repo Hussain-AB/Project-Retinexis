@@ -1,12 +1,11 @@
 #!/bin/bash
-#SBATCH --account=x_almofaf
 #SBATCH --job-name=phase1_efficientnet_b2
 #SBATCH --output=/home/x_albeshh/Project-Retinexis/outputs/phase1_efficientnet_b2/%x_%j.out # %x is the job name, %j is the job ID
 #SBATCH --error=/home/x_albeshh/Project-Retinexis/outputs/phase1_efficientnet_b2/%x_%j.err
 #SBATCH --nodes=1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
-#SBATCH --gpus=4
+#SBATCH --gres=gpu:a100:4 # Request an A100 GPU
 #SBATCH --time=24:00:00 # Depending on training length, adjust time up to 72 hours for long jobs
 
 # Ensure we fail fast if any command fails
