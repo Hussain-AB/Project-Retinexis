@@ -59,8 +59,8 @@ from src.models.base import BaseClassifier
 from src.data.loader import create_dataloaders, rebuild_loaders
 from src.data.base_dataset import MetadataEncoder
 from src.training.loss import build_loss
-# from src.training.optimiser import build_layer_wise_param_groups
-# from src.training.scheduler import build_cosine_warmup_scheduler
+from src.training.optimiser import build_layer_wise_param_groups
+from src.training.scheduler import build_cosine_warmup_scheduler
 from src.training.logging import TrainLogger
 from src.evaluation.metrics import compute_metrics
 from src.utils.reproducibility import get_rng_states, set_rng_states
@@ -281,50 +281,98 @@ class Trainer:
         """Full fine-tuning with early stopping. Returns best val AUROC."""
         config = self.config
 
-        # TODO: switch model to finetune mode
-        #   model.set_finetune_mode()
 
-        # TODO: rebuild loaders with phase2 batch size
-        #   self.train_loader, self.val_loader = rebuild_loaders(
-        #       self.train_loader, self.val_loader,
-        #       batch_size=config.phase2_batch_size, config=config)
+        self.model.set_finetune_mode()
 
-        # TODO: build optimiser with layer-wise LR decay
-        #   param_groups = build_layer_wise_param_groups(
-        #       model, config.phase2_lr, config.lr_decay_factor,
-        #       config.weight_decay, self.metadata_head)
-        #   optimiser = AdamW(param_groups)
+   
+        self.train_loader, self.val_loader = rebuild_loaders(
+            self.train_loader, self.val_loader,
+            batch_size=config.phase2_batch_size, config=config
+        )
 
-        # TODO: build cosine warmup scheduler
-        #   scheduler = build_cosine_warmup_scheduler(
-        #       optimiser, config.warmup_epochs, config.phase2_epochs,
-        #       config.min_lr, config.phase2_lr)
+     
+        param_groups = build_layer_wise_param_groups(
+              self.model, config.phase2_lr, config.lr_decay_factor,
+              config.weight_decay, self.metadata_head)
+        optimiser = AdamW(param_groups)
 
-        # TODO: early stopping state
-        #   patience_counter = 0
-        #   min_delta = 0.001
-        #   phase2_best_auroc = 0.0
+        scheduler = build_cosine_warmup_scheduler(
+              optimiser, config.warmup_epochs, config.phase2_epochs,
+              config.min_lr, config.phase2_lr)
 
-        # TODO: training loop
-        #   for epoch in range(start, config.phase2_epochs):
-        #       train_loss = self._train_one_epoch(optimiser)
-        #       val_loss, val_metrics = self._validate_one_epoch()
-        #       scheduler.step()
-        #
-        #       # early stopping check
-        #       # save last.pt every epoch (SLURM resume)
-        #       # save best.pt on improvement
-        #       # log via self.logger.log_epoch(...)
-        #       # break if patience exhausted
+   
+       # RESUME FIX (before Phase 2 Ibex runs)
+        if self._resume_checkpoint is not None and self.start_phase == "phase2":
+            optimiser.load_state_dict(self._resume_checkpoint["optimiser_state_dict"])
+            if self._resume_checkpoint["scheduler_state_dict"] is not None:
+                scheduler.load_state_dict(self._resume_checkpoint["scheduler_state_dict"])
 
-        # TODO: RESUME FIX (before Phase 2 Ibex runs)
-        #   After constructing optimiser and scheduler above, check if
-        #   we're resuming and load:
-        #       optimiser.load_state_dict(checkpoint["optimiser_state_dict"])
-        #       scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
-        #   Need to stash the checkpoint dict from _load_checkpoint for this.
+            self._resume_checkpoint = None
 
-        raise NotImplementedError("Phase 2 — implement with other MLOps lead")
+        patience_counter = 0
+        min_delta = 0.001
+        phase2_best_auroc = 0.0
+
+        start = self.start_epoch if self.start_phase == "phase2" else 0
+
+        final_auroc = 0.0
+
+        for epoch in range(start, config.phase2_epochs):
+            epoch_start = time.time()
+
+            train_loss = self._train_one_epoch(optimiser)
+            val_loss, val_metrics = self._validate_one_epoch()
+
+            scheduler.step()
+
+            elapsed = time.time() - epoch_start
+            current_lr = optimiser.param_groups[0]['lr']
+            auroc = val_metrics.get("auroc", 0.0)
+            final_auroc = auroc
+            
+            self.logger.log_epoch(
+                epoch=epoch,
+                phase="phase2",
+                train_loss=train_loss,
+                val_loss=val_loss,
+                val_metrics=val_metrics,
+                lr=current_lr,
+                elapsed=elapsed
+            )
+
+            print(
+                f"  Epoch {epoch}/{config.phase2_epochs - 1} — "
+                f"train_loss: {train_loss:.4f}, "
+                f"val_loss: {val_loss:.4f}, "
+                f"val_auroc: {auroc:.4f} "
+                f"({elapsed:.1f}s)"
+            )
+
+            last_path = config.checkpoint_dir / "last.pt"
+
+            self._save_checkpoint(last_path, epoch, "phase2", optimiser, scheduler, val_metrics)
+
+            if auroc > (phase2_best_auroc + min_delta):
+                phase2_best_auroc = auroc
+                self.best_val_auroc = auroc
+                patience_counter = 0
+
+                best_path = config.checkpoint_dir / "best.pt"
+                self._save_checkpoint(best_path, epoch, "phase2", optimiser, scheduler, val_metrics)
+                print(f"New best AUROC: {auroc:.4f} (Saved best.pt)")
+            else:
+                patience_counter += 1
+                print(f"No Improvemnt. Patience: {patience_counter}/{config.patience}")
+
+            if patience_counter >= config.patience:
+                print(f"\n  Early stopping triggered after {epoch + 1} epochs.")
+                break
+        
+        print(f"Best AUROC: {self.best_val_auroc:.4f}")
+        return final_auroc
+
+       
+
 
     #  CORE LOOPS: shared by both phases
     def _train_one_epoch(self, optimiser: AdamW) -> float:
@@ -428,6 +476,9 @@ class Trainer:
         """Load checkpoint for resumption. See docstring RESUME NOTE."""
         print(f"  Resuming from checkpoint: {path}")
         checkpoint = torch.load(path, map_location=self.device, weights_only=False)
+
+        # store the raw checkpoint data so Phase 2 can find the optimizer state later
+        self._resume_checkpoint = checkpoint
 
         self.model.load_state_dict(checkpoint["model_state_dict"])
 
