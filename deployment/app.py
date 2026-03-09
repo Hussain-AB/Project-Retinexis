@@ -20,7 +20,9 @@ import time
 from pathlib import Path
 from PIL import Image
 from datetime import datetime
-
+import torch
+import torch.nn as nn
+import cv2
 
 # [MODELS] Model registry & inference
 # ──────────────────────────────────────────────
@@ -324,31 +326,227 @@ def generate_fhir_observation(
 
 # [EXTRAS] Attention / saliency maps
 
+def _architecture_type(task: str, model_name: str) -> str:
+    """Return 'vit' for Vision Transformers or 'cnn' for convolutional models."""
+    arch = TASK_MODELS.get(task, {}).get(model_name, {}).get("architecture", "").lower()
+    if any(x in arch for x in ("vit", "dino", "retfound", "transformer")):
+        return "vit"
+    if arch:
+        return "cnn"
+    raise gr.Error(f"Unknown architecture for model '{model_name}'. Check TASK_MODELS.")
+
+
+_GRADCAM_TARGET_LAYER_MAP = {
+    "EfficientNet-B2": lambda m: [m.features[-1]],
+    "ConvNeXt V2-Base": lambda m: [m.stages[-1]],
+}
+
+
+def _get_target_layers(model: nn.Module, model_name: str = "") -> list:
+    """
+    Return GradCAM target layer(s) for a CNN model.
+    Uses an explicit per-model mapping first, then falls back to scanning
+    all modules for the last Conv2d in the network.
+    """
+    if model_name in _GRADCAM_TARGET_LAYER_MAP:
+        return _GRADCAM_TARGET_LAYER_MAP[model_name](model)
+    last_conv = None
+    for m in model.modules():
+        if isinstance(m, nn.Conv2d):
+            last_conv = m
+    if last_conv is None:
+        raise gr.Error("Could not find a convolutional layer for GradCAM.")
+    return [last_conv]
+
+
+def _to_batched_tensor(image_tensor) -> torch.Tensor:
+    """
+    Convert the output of preprocess_image() to a (1, C, H, W) float tensor.
+    Does NOT re-normalise — assumes preprocess_image already handled that.
+    """
+    if isinstance(image_tensor, np.ndarray):
+        tensor = torch.from_numpy(image_tensor.copy()).float()
+    elif isinstance(image_tensor, torch.Tensor):
+        tensor = image_tensor.float()
+    else:
+        raise gr.Error(f"Unsupported preprocessed image type: {type(image_tensor)}")
+
+    if tensor.dim() == 3:
+        # (H, W, C) → (C, H, W); already (C, H, W) stays as-is
+        if tensor.shape[-1] in (1, 3):
+            tensor = tensor.permute(2, 0, 1)
+        tensor = tensor.unsqueeze(0)
+    elif tensor.dim() != 4:
+        raise gr.Error(f"Unexpected tensor shape from preprocess_image: {tuple(tensor.shape)}")
+
+    return tensor
+
+
+def _apply_gradcam(
+    model: nn.Module,
+    image_tensor,
+    original_image: Image.Image,
+    model_name: str = "",
+    opacity: float = 0.5,
+) -> tuple[Image.Image, str]:
+    """
+    Apply GradCAM to a CNN model (e.g. EfficientNet-B2, ConvNeXt V2-Base).
+    Requires pytorch-grad-cam (pip install grad-cam).
+    Returns (overlay PIL Image, method name string).
+    """
+    from pytorch_grad_cam import GradCAM
+    from pytorch_grad_cam.utils.image import show_cam_on_image
+
+    device = next(model.parameters()).device
+    target_layers = _get_target_layers(model, model_name)
+    tensor = _to_batched_tensor(image_tensor).to(device)
+
+    model.eval()
+    with GradCAM(model=model, target_layers=target_layers) as cam:
+        grayscale_cam = cam(input_tensor=tensor)[0]  # (H, W) in [0, 1]
+
+    opacity = float(np.clip(opacity, 0.0, 1.0))
+    orig_rgb = np.array(original_image.convert("RGB")).astype(np.float32) / 255.0
+    orig_resized = cv2.resize(orig_rgb, (grayscale_cam.shape[1], grayscale_cam.shape[0]))
+    overlay_arr = show_cam_on_image(orig_resized, grayscale_cam, use_rgb=True, image_weight=1 - opacity)
+
+    return Image.fromarray(overlay_arr), "GradCAM"
+
+
+def _apply_attention_rollout(
+    model: nn.Module,
+    image_tensor,
+    original_image: Image.Image,
+    opacity: float = 0.5,
+    discard_ratio: float = 0.1,  
+) -> tuple[Image.Image, str]:
+    """
+    Attention rollout for ViT models (e.g. RETFound-DINOv2, DINOv2-Large).
+
+    Registers forward hooks on nn.MultiheadAttention layers to collect attention
+    weights, folds them across all layers using the rollout algorithm, and uses
+    the CLS token's attention to each patch as the saliency map.
+
+    Note: works when the model uses nn.MultiheadAttention and returns weights in
+    output[1]. Models with fused or custom attention layers may need
+    architecture-specific rollout support and will raise a clear error.
+
+    Returns (overlay PIL Image, method name string).
+    """
+    attention_weights = []
+    hooks = []
+
+    def _hook(module, input, output):
+        # nn.MultiheadAttention returns (attn_output, attn_weights)
+        if isinstance(output, tuple) and len(output) >= 2 and output[1] is not None:
+            attention_weights.append(output[1].detach().cpu())
+
+    for module in model.modules():
+        if isinstance(module, nn.MultiheadAttention):
+            hooks.append(module.register_forward_hook(_hook))
+
+    device = next(model.parameters()).device
+    tensor = _to_batched_tensor(image_tensor).to(device)
+
+    model.eval()
+    try:
+        with torch.no_grad():
+            model(tensor)
+    finally:
+        for hook in hooks:
+            hook.remove()
+
+    if not attention_weights:
+        raise gr.Error(
+            "Could not extract attention weights from this model. "
+            "The architecture may need custom attention rollout support."
+        )
+
+    # Rollout: fold all attention layers together
+    seq_len = attention_weights[0].shape[-1]
+    result = torch.eye(seq_len, dtype=attention_weights[0].dtype, device=attention_weights[0].device)
+    for attn in attention_weights:
+        attn_mat = attn[0].clone()
+
+        # Handle (heads, seq, seq) or (seq, seq) — average over heads if needed
+        if attn_mat.dim() == 3:
+            attn_mat = attn_mat.mean(dim=0)   # (seq, seq)
+        elif attn_mat.dim() != 2:
+            raise gr.Error(f"Unexpected attention weight shape: {tuple(attn.shape)}")
+
+        if discard_ratio > 0:
+            k = max(1, int(discard_ratio * attn_mat.numel()))
+            threshold = attn_mat.flatten().kthvalue(k).values
+            attn_mat[attn_mat < threshold] = 0
+        attn_mat = attn_mat + torch.eye(attn_mat.shape[0], dtype=attn_mat.dtype, device=attn_mat.device)
+        attn_mat = attn_mat / attn_mat.sum(dim=-1, keepdim=True)
+        result = torch.mm(attn_mat, result)
+
+    # CLS token (row 0) attention to patch tokens (cols 1:)
+    mask = result[0, 1:].cpu().numpy()
+
+    grid = int(len(mask) ** 0.5)
+    if grid * grid != len(mask):
+        raise gr.Error(
+            f"Cannot reshape {len(mask)} patch tokens into a square grid. "
+            "The model may use a non-square patch layout."
+        )
+    mask = mask.reshape(grid, grid)
+    mask = (mask - mask.min()) / (mask.max() - mask.min() + 1e-8)
+
+    orig_rgb = np.array(original_image.convert("RGB"))
+    h, w = orig_rgb.shape[:2]
+    mask_resized = cv2.resize(mask, (w, h))
+
+    opacity = float(np.clip(opacity, 0.0, 1.0))
+    heatmap = cv2.applyColorMap(np.uint8(255 * mask_resized), cv2.COLORMAP_JET)
+    heatmap_rgb = cv2.cvtColor(heatmap, cv2.COLOR_BGR2RGB)
+    overlay_arr = cv2.addWeighted(orig_rgb, 1 - opacity, heatmap_rgb, opacity, 0)
+
+    return Image.fromarray(overlay_arr), "Attention Rollout"
+
 
 def generate_saliency_map(image, task, model_name):
     """
-    Generate a GradCAM or attention rollout heatmap overlay.
+    Generate a heatmap overlay showing which image regions influenced the model's prediction.
 
-    TODO [Person 3]: Implement saliency map generation:
-        - For CNNs (EfficientNet, ConvNeXt, SE-ResNeXt): use GradCAM on last conv layer
-        - For ViTs (RETFound, DINOv2, DINOv3): use attention rollout from last attention block
-        - Overlay heatmap on original image with adjustable opacity
-        - Return both the overlay image and a raw heatmap
-
-    Libraries to consider:
-        - pytorch-grad-cam (pip install grad-cam)
-        - Custom attention rollout for ViTs
+    Routes to GradCAM for CNN architectures (EfficientNet-B2, ConvNeXt V2-Base)
+    and attention rollout for ViT architectures (RETFound-DINOv2, DINOv2-Large).
+    Overlays the heatmap on the original image at 50% opacity.
 
     Returns:
-        tuple: (overlay_image, raw_heatmap)
+        tuple: (overlay_image PIL, info markdown string)
     """
     if image is None:
         raise gr.Error("Please upload an image first.")
 
-    # STUB — returns placeholder. Remove when implementing.
-    placeholder = np.zeros_like(np.array(image))
-    return Image.fromarray(placeholder), "Saliency map not yet implemented."
+    model, preprocessing_config = load_model(task, model_name)
 
+    # Graceful fallback until Person 2 integrates model loading
+    if model is None:
+        arch_type = _architecture_type(task, model_name)
+        method = "Attention Rollout" if arch_type == "vit" else "GradCAM"
+        info = (
+            f"**Model not yet loaded** — saliency maps will be available once "
+            f"the model pipeline is integrated.\n\n"
+            f"Method that will be used: **{method}** ({model_name})"
+        )
+        return image, info
+
+    arch_type = _architecture_type(task, model_name)
+    image_tensor = preprocess_image(np.array(image), preprocessing_config)
+
+    if arch_type == "vit":
+        overlay, method = _apply_attention_rollout(model, image_tensor, image)
+    else:
+        overlay, method = _apply_gradcam(model, image_tensor, image, model_name=model_name)
+
+    info = (
+        f"**Method:** {method}  \n"
+        f"**Model:** {model_name}  \n\n"
+        f"*Highlighted regions indicate areas most influential for the prediction.*"
+    )
+    return overlay, info
 
 
 # [EXTRAS] Model comparison
@@ -356,13 +554,11 @@ def generate_saliency_map(image, task, model_name):
 
 def compare_models(image, task, age, sex):
     """
-    Run all available models for a task on the same image and compare.
+    Run all available models for a task on the same image and compare results.
 
-    TODO [Person 3]: Implement model comparison:
-        1. Get all models for the selected task from TASK_MODELS
-        2. Run predict() for each model
-        3. Build a comparison table with columns: Model, Prediction, Probability, Confidence
-        4. Return as a Markdown table or gr.Dataframe
+    Loads each model, preprocesses the image with its config, runs inference,
+    and returns a Markdown table with columns:
+        Model | Type | Prediction | Probability | Confidence
 
     Returns:
         str: Markdown-formatted comparison table
@@ -370,21 +566,71 @@ def compare_models(image, task, age, sex):
     if image is None:
         raise gr.Error("Please upload an image first.")
 
-    models = get_model_choices(task)
-    rows = []
-    for name in models:
-        # TODO: Replace with actual inference per model
-        dummy_prob = float(np.random.uniform(0.2, 0.8))
-        pred = "Positive" if dummy_prob > 0.5 else "Negative"
-        rows.append(f"| {name} | {pred} | {dummy_prob:.1%} | {abs(dummy_prob - 0.5)*2:.1%} |")
+    metadata = {}
+    try:
+        if age is not None and age != "":
+            metadata["age"] = float(age)
+        if sex is not None and sex != "":
+            metadata["sex"] = int(sex)
+    except ValueError as e:
+        raise gr.Error(f"Invalid metadata input: {e}")
 
-    table = (
-        "| Model | Prediction | Probability | Confidence |\n"
-        "|-------|-----------|-------------|------------|\n"
-        + "\n".join(rows)
-    )
-    return table
+    model_names = get_model_choices(task)
+    if not model_names:
+        raise gr.Error("No models available for the selected task.")
 
+    img_array = np.array(image)
+    rows = []  # (name, arch, pred, prob, conf) for successful runs
+    error_rows = []  # (name, error_message) for failed runs
+
+    for name in model_names:
+        try:
+            model, preprocessing_config = load_model(task, name)
+
+            if model is None:
+                error_rows.append((name, "Model not yet loaded"))
+                continue
+
+            image_tensor = preprocess_image(img_array, preprocessing_config)
+            result = run_inference(model, image_tensor, metadata)
+
+            prob = result["probability"]
+            pred = "Positive" if result["prediction"] == 1 else "Negative"
+            conf = result["confidence"]
+            arch = _architecture_type(task, name).upper()
+            rows.append((name, arch, pred, prob, conf))
+
+        except gr.Error:
+            raise  # let Gradio errors propagate normally
+        except Exception as e:
+            error_rows.append((name, str(e)))
+
+    table_lines = [
+        f"### {task} — Model Comparison\n",
+        "| Model | Type | Prediction | Probability | Confidence |",
+        "|-------|------|-----------|-------------|------------|",
+    ]
+
+    if rows:
+        best = max(rows, key=lambda r: r[4])
+        for name, arch, pred, prob, conf in rows:
+            marker = " [best]" if name == best[0] else ""
+            table_lines.append(f"| {name}{marker} | {arch} | {pred} | {prob:.1%} | {conf:.1%} |")
+
+    for name, error_msg in error_rows:
+        table_lines.append(f"| {name} | — | — | — | {error_msg} |")
+
+    if rows:
+        table_lines.append(f"\nHighest confidence: **{best[0]}** ({best[4]:.1%})")
+
+    if not rows and error_rows:
+        table_lines.append("\n*No models produced a valid result.*")
+    elif error_rows:
+        table_lines.append(
+            f"\n*{len(error_rows)} model(s) could not run — see rows above.*"
+        )
+
+    return "\n".join(table_lines)
 
 
 # [EXTRAS] Dual eye input
