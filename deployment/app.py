@@ -506,6 +506,26 @@ def _apply_attention_rollout(
     return Image.fromarray(overlay_arr), "Attention Rollout"
 
 
+def generate_saliency_and_store(image, task, model_name):
+    """
+    Wrapper around generate_saliency_map that also returns the original image
+    so the UI can toggle between overlay and original.
+
+    Returns:
+        tuple: (overlay, info, overlay_for_state, original_image, showing_overlay=True, toggle_label)
+    """
+    overlay, info = generate_saliency_map(image, task, model_name)
+    return overlay, info, overlay, image, True, "Show Original"
+
+
+def toggle_saliency_view(showing_overlay, overlay_img, original_img):
+    """Switch the displayed image between overlay and original."""
+    if showing_overlay:
+        return original_img, False, "Show Overlay"
+    else:
+        return overlay_img, True, "Show Original"
+
+
 def generate_saliency_map(image, task, model_name):
     """
     Generate a heatmap overlay showing which image regions influenced the model's prediction.
@@ -638,27 +658,87 @@ def compare_models(image, task, age, sex):
 
 def predict_dual_eye(image_left, image_right, task, model_name, age, sex):
     """
-    Run prediction on both eyes and display side-by-side results.
+    Run prediction on both eyes and return results for side-by-side display.
 
-    TODO [Person 3]: Implement dual eye prediction.
-        The label is patient-level (not per-eye), so inference only runs
-        on one eye. The dual eye upload reflects the clinical workflow
-        where both eyes are captured during examination.
-    
+    Reflects the clinical workflow where clinicians capture fundus images of
+    both eyes during routine examinations. Inference runs independently on
+    each eye using the same model and patient metadata.
+
     Returns:
         tuple: (left_summary, right_summary, combined_summary)
     """
-    results = []
-    for label, img in [("Left Eye", image_left), ("Right Eye", image_right)]:
+    if image_left is None and image_right is None:
+        raise gr.Error("Please upload at least one retinal fundus image.")
+
+    def _run(label, img):
         if img is None:
-            results.append(f"**{label}:** No image uploaded")
-        else:
-            summary, _ = predict(img, task, model_name, age, sex)
-            results.append(f"### {label}\n{summary}")
+            return f"*No image uploaded for {label}.*"
+        summary, _ = predict(img, task, model_name, age, sex)
+        return f"### {label}\n{summary}"
 
-    combined = "\n\n---\n\n".join(results)
-    return combined
+    left_summary = _run("Left Eye", image_left)
+    right_summary = _run("Right Eye", image_right)
+    combined_summary = f"{left_summary}\n\n---\n\n{right_summary}"
+    return left_summary, right_summary, combined_summary
 
+
+
+# [EXTRAS] Session history helpers
+
+
+def clear_history() -> tuple:
+    """Reset session history to empty state."""
+    return [], [], "*No predictions yet in this session.*"
+
+
+def _history_gallery_items(history: list) -> list:
+    """Return (image, caption) pairs for gr.Gallery."""
+    return [(entry["image"], entry["caption"]) for entry in history]
+
+
+def _history_markdown(history: list) -> str:
+    """Render history entries as a markdown list (most recent first)."""
+    if not history:
+        return "*No predictions yet in this session.*"
+    lines = ["## Session History\n"]
+    for entry in reversed(history):
+        lines.append(f"**{entry['caption']}**\n\n{entry['summary']}\n\n---\n")
+    return "\n".join(lines)
+
+
+def predict_and_log(image, task, model_name, age, sex, history):
+    """Wrap predict() and append the result to session history."""
+    history = history or []
+    summary, fhir = predict(image, task, model_name, age, sex)
+    caption = f"{task} · {model_name} · {datetime.now().strftime('%H:%M:%S')}"
+    updated = history + [{"image": image, "caption": caption, "summary": summary}]
+    return summary, fhir, updated, _history_gallery_items(updated), _history_markdown(updated)
+
+
+def dual_predict_and_log(image_left, image_right, task, model_name, age, sex, history):
+    """Wrap predict_dual_eye() and append each eye as a separate history entry."""
+    history = history or []
+    left_summary, right_summary, combined_summary = predict_dual_eye(
+        image_left, image_right, task, model_name, age, sex
+    )
+    updated = list(history)
+    ts = datetime.now().strftime("%H:%M:%S")
+    if image_left is not None:
+        updated.append({
+            "image": image_left,
+            "caption": f"{task} · {model_name} · Left Eye · {ts}",
+            "summary": left_summary,
+        })
+    if image_right is not None:
+        updated.append({
+            "image": image_right,
+            "caption": f"{task} · {model_name} · Right Eye · {ts}",
+            "summary": right_summary,
+        })
+    return (
+        left_summary, right_summary, combined_summary,
+        updated, _history_gallery_items(updated), _history_markdown(updated),
+    )
 
 
 # [CORE] Dynamic UI updates
@@ -715,6 +795,9 @@ def build_app() -> gr.Blocks:
             "<h1 class='main-title'>Project Retinexis</h1>"
             "<p class='subtitle'>Deep Learning for Non-Invasive Systemic Disease Detection from Retinal Images</p>"
         )
+
+        # Session history state (per-user, resets on page refresh)
+        session_history = gr.State([])
 
         with gr.Tabs() as tabs:
 
@@ -812,12 +895,6 @@ def build_app() -> gr.Blocks:
                     inputs=[task_dropdown, model_dropdown],
                     outputs=[model_description],
                 )
-                predict_btn.click(
-                    fn=predict,
-                    inputs=[image_input, task_dropdown, model_dropdown, age_input, sex_input],
-                    outputs=[result_output, fhir_output],
-                )
-
             # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
             # TAB 2: Model Comparison [EXTRAS]
             # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -907,21 +984,25 @@ def build_app() -> gr.Blocks:
                             variant="primary",
                         )
 
-                dual_output = gr.Markdown(
-                    value="*Upload images for both eyes and click 'Analyse Both Eyes'.*"
-                )
+                with gr.Row():
+                    dual_output_left = gr.Markdown(
+                        value="*Left eye result will appear here.*",
+                        label="Left Eye Result",
+                    )
+                    dual_output_right = gr.Markdown(
+                        value="*Right eye result will appear here.*",
+                        label="Right Eye Result",
+                    )
+                with gr.Accordion("Combined Summary", open=False):
+                    dual_output_combined = gr.Markdown(
+                        value="*Combined summary will appear here.*",
+                    )
 
                 # Update model dropdown when task changes
                 dual_task.change(
                     fn=lambda t: gr.update(choices=get_model_choices(t), value=get_model_choices(t)[0]),
                     inputs=[dual_task],
                     outputs=[dual_model],
-                )
-
-                dual_btn.click(
-                    fn=predict_dual_eye,
-                    inputs=[left_eye_input, right_eye_input, dual_task, dual_model, dual_age, dual_sex],
-                    outputs=[dual_output],
                 )
 
             # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -956,11 +1037,21 @@ def build_app() -> gr.Blocks:
                         )
 
                     with gr.Column():
-                        sal_overlay = gr.Image(
+                        sal_display = gr.Image(
                             label="Saliency Overlay",
                             height=300,
                         )
+                        sal_toggle_btn = gr.Button(
+                            "Show Original",
+                            size="sm",
+                            visible=False,
+                        )
                         sal_info = gr.Markdown()
+
+                # States for toggle
+                sal_overlay_state = gr.State(None)
+                sal_original_state = gr.State(None)
+                sal_showing_overlay = gr.State(True)
 
                 # Update model dropdown when task changes
                 sal_task.change(
@@ -970,10 +1061,55 @@ def build_app() -> gr.Blocks:
                 )
 
                 sal_btn.click(
-                    fn=generate_saliency_map,
+                    fn=generate_saliency_and_store,
                     inputs=[sal_image, sal_task, sal_model],
-                    outputs=[sal_overlay, sal_info],
+                    outputs=[sal_display, sal_info, sal_overlay_state, sal_original_state, sal_showing_overlay, sal_toggle_btn],
                 )
+
+                sal_toggle_btn.click(
+                    fn=toggle_saliency_view,
+                    inputs=[sal_showing_overlay, sal_overlay_state, sal_original_state],
+                    outputs=[sal_display, sal_showing_overlay, sal_toggle_btn],
+                )
+
+            # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+            # TAB 5: Session History [EXTRAS]
+            # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+            with gr.Tab("History", id="history"):
+                gr.Markdown(
+                    "### Session History\n"
+                    "All predictions made during this session. Resets on page refresh."
+                )
+                history_gallery = gr.Gallery(
+                    label="Uploaded Images",
+                    columns=4,
+                    height=200,
+                    object_fit="cover",
+                )
+                history_md = gr.Markdown(
+                    value="*No predictions yet in this session.*"
+                )
+                clear_history_btn = gr.Button("Clear History", variant="stop", size="sm")
+
+                clear_history_btn.click(
+                    fn=clear_history,
+                    inputs=[],
+                    outputs=[session_history, history_gallery, history_md],
+                )
+
+        # ── Cross-tab event wiring (requires all components to be defined first) ──
+
+        predict_btn.click(
+            fn=predict_and_log,
+            inputs=[image_input, task_dropdown, model_dropdown, age_input, sex_input, session_history],
+            outputs=[result_output, fhir_output, session_history, history_gallery, history_md],
+        )
+
+        dual_btn.click(
+            fn=dual_predict_and_log,
+            inputs=[left_eye_input, right_eye_input, dual_task, dual_model, dual_age, dual_sex, session_history],
+            outputs=[dual_output_left, dual_output_right, dual_output_combined, session_history, history_gallery, history_md],
+        )
 
     return app
 
