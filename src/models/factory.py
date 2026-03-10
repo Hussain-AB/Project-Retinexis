@@ -21,6 +21,20 @@ _EXPECTED_KWARGS: dict[str, set[str]] = {
         "pool",
         "input_size_override",
     },
+    "swanv2": {
+        "variant",
+        "num_classes",
+        "pretrained",
+        "pool",
+        "input_size_override",
+    },
+    "swanV2": {
+        "variant",
+        "num_classes",
+        "pretrained",
+        "pool",
+        "input_size_override",
+    },
     
     "resnet": {                      
         "variant", 
