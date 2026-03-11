@@ -14,6 +14,7 @@ venv/
 
 # Data
 data/
+qc_output
 
 # Training outputs
 outputs/
@@ -27,11 +28,4 @@ Hypertension/src/data/odir_dataprep/processed/
 Hypertension/src/data/odir_dataprep/logs/
 Hypertension/src/data/ODIR-5K/
 Hypertension/src/data/BRSET/
-<<<<<<< HEAD
-data/brset
-data/odir
 raw/
-qc_output
-=======
-raw/
->>>>>>> 256acb67efde01961b87d005f1258f4e327a1fef
