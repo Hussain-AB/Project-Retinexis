@@ -1,0 +1,71 @@
+# generic Phase 2 fine-tuning template
+# !!copy this into a task-specific config and replace the placeholder values!!
+
+run:
+  task_name: CHANGE_ME
+  dataset_name: CHANGE_ME
+  experiment_name: CHANGE_ME
+  fold: 0
+  seed: 42
+  output_dir: outputs/CHANGE_ME
+
+data:
+  labels_csv: CHANGE_ME
+  data_dir: CHANGE_ME
+  splits_file: CHANGE_ME
+  sample_id_col: CHANGE_ME
+  patient_id_col: CHANGE_ME
+  label_col: CHANGE_ME
+
+model:
+  architecture: CHANGE_ME
+  pretrained: true
+  num_classes: 1
+  model_kwargs: {}
+
+training:
+  skip_phase1: true
+  checkpoint_path: null
+  epochs: 50
+  batch_size: 32
+  lr: 1.0e-4
+  weight_decay: 0.05
+  min_lr: 1.0e-6
+  warmup_epochs: 5
+  patience: 7
+  optimiser: adamw
+  scheduler: cosine
+  lr_decay_factor: 0.65
+
+loss:
+  name: bce_with_logits
+  use_weighted_bce: true
+  pos_weight: null
+
+preprocessing:
+  image_size: 224
+  normalization: imagenet
+  mean: [0.485, 0.456, 0.406]
+  std: [0.229, 0.224, 0.225]
+
+augmentation:
+  hflip: true
+  rotation: 10
+  scale_min: 0.98
+  scale_max: 1.02
+  brightness: 0.05
+  contrast: 0.05
+  blur_prob: 0.4
+  blur_limit: 3
+  random_erasing: 0.0
+
+dataloader:
+  num_workers: 4
+  pin_memory: true
+  persistent_workers: true
+  prefetch_factor: 2
+
+logging:
+  use_wandb: true
+  wandb_project: retinexis
+  wandb_entity: CHANGE_ME
