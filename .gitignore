@@ -1,14 +1,37 @@
+# Python
 __pycache__/
+*.pyc
+*.egg-info/
 .env/
 .venv/
-.ipynb_checkpoints
+venv/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# macOS
 .DS_Store
+
+# Data
+data/
+
+# Training outputs
+outputs/
+
+# W&B local run data
+wandb/
+
+# Legacy paths (pre-restructure)
 Hypertension/src/data/raw/
 Hypertension/src/data/odir_dataprep/processed/
 Hypertension/src/data/odir_dataprep/logs/
 Hypertension/src/data/ODIR-5K/
 Hypertension/src/data/BRSET/
+<<<<<<< HEAD
 data/brset
 data/odir
 raw/
 qc_output
+=======
+raw/
+>>>>>>> 256acb67efde01961b87d005f1258f4e327a1fef
