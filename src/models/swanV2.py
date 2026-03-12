@@ -23,19 +23,13 @@ from .base import BaseClassifier, IMAGENET_NORM, PreprocessingConfig
 _HF_REPO_ID = "zdaxie/SimMIM"
 
 VARIANT_CONFIG = {
-    "base": {
+    "small": {
         "model_name": "swinv2_small_window16_256",
         "checkpoint_file": "simmim_swinv2_finetune_models/finetune_swinv2_small_1k_500k.pth",
         "feature_dim": 768,
         "input_size": 256,
     },
     "large": {
-        "model_name": "swinv2_base_window16_256",
-        "checkpoint_file": "simmim_swinv2_finetune_models/finetune_swinv2_base_1k_500k.pth",
-        "feature_dim": 1024,
-        "input_size": 256,
-    },
-    "giant": {
         "model_name": "swinv2_large_window16_256",
         "checkpoint_file": "simmim_swinv2_finetune_models/finetune_swinv2_large_1k_500k.pth",
         "feature_dim": 1536,
@@ -45,6 +39,12 @@ VARIANT_CONFIG = {
         "model_name": "swinv2_huge_window16_256",
         "checkpoint_file": "simmim_swinv2_finetune_models/finetune_swinv2_huge_1k_500k.pth",
         "feature_dim": 2816,
+        "input_size": 256,
+    },
+    "giant": {
+        "model_name": "swinv2_giant_window16_256",
+        "checkpoint_file": "simmim_swinv2_finetune_models/finetune_swinv2_giant_1k_500k.pth",
+        "feature_dim": 4096,
         "input_size": 256,
     },
 }
