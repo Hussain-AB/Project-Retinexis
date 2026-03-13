@@ -744,7 +744,7 @@ def dual_predict_and_log(image_left, image_right, task, model_name, age, sex, hi
 # [CORE] Dynamic UI updates
 
 
-def on_task_change(task):
+'''def on_task_change(task):
     """Update model dropdown choices when task changes."""
     choices = get_model_choices(task)
     default = choices[0] if choices else None
@@ -754,374 +754,605 @@ def on_task_change(task):
 
 def on_model_change(task, model_name):
     """Update model description when model selection changes."""
-    return get_model_description(task, model_name)
+    return get_model_description(task, model_name)'''
 
 
 
 # [CORE] Build Gradio interface
 
-
+#Updated CSS 
 CUSTOM_CSS = """
-.main-title {
+@import url('https://fonts.googleapis.com/css2?family=DM+Serif+Display&display=swap');
+ 
+/* ── Header ── */
+.retinexis-eyebrow {
     text-align: center;
-    margin-bottom: 0.5rem;
+    font-size: 0.7rem;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: #0F6E56;
+    font-weight: 500;
+    margin-bottom: 4px;
 }
-.subtitle {
+.retinexis-title {
+    text-align: center;
+    font-family: 'DM Serif Display', Georgia, serif !important;
+    font-size: 2rem !important;
+    font-weight: 400 !important;
+    line-height: 1.1;
+    margin-bottom: 4px;
+}
+.retinexis-subtitle {
     text-align: center;
     color: #6b7280;
-    font-size: 0.95rem;
+    font-size: 0.85rem;
     margin-bottom: 1.5rem;
 }
-.disclaimer {
-    background: #fef3c7;
-    border: 1px solid #f59e0b;
-    border-radius: 8px;
-    padding: 0.75rem 1rem;
-    font-size: 0.85rem;
-    color: #92400e;
-    margin-top: 1rem;
+ 
+/* ── Disease tab bar (outer) — scoped to exclude sub-tab-nav ── */
+#disease-tabs,
+#disease-tabs > div,
+#disease-tabs > div > .tab-container[role="tablist"] {
+    overflow: visible !important;
 }
+#disease-tabs > div > .tab-container[role="tablist"] {
+    display: grid !important;
+    grid-template-columns: 1fr 1fr auto !important;
+    gap: 10px !important;
+    border-bottom: none !important;
+    margin-bottom: 2.5rem !important;
+    padding: 4px !important;
+}
+#disease-tabs > div > .tab-container[role="tablist"] button {
+    border: 1.5px solid #d1d5db !important;
+    border-radius: 12px !important;
+    padding: 0 18px !important;
+    height: 56px !important;
+    min-height: 56px !important;
+    max-height: unset !important;
+    background: white !important;
+    font-size: 0.9rem !important;
+    font-weight: 500 !important;
+    text-align: left !important;
+    color: #374151 !important;
+    margin: 0 !important;
+    line-height: 1.3 !important;
+    transition: border-color 0.2s, background 0.2s !important;
+}
+#disease-tabs > div > .tab-container[role="tablist"] button:hover {
+    border-color: #1D9E75 !important;
+}
+#disease-tabs > div > .tab-container[role="tablist"] button[data-tab-id="cvd"].selected {
+    border-color: #185FA5 !important;
+    background: #E6F1FB !important;
+    color: #0C447C !important;
+}
+#disease-tabs > div > .tab-container[role="tablist"] button[data-tab-id="htn"].selected {
+    border-color: #0F6E56 !important;
+    background: #E1F5EE !important;
+    color: #085041 !important;
+}
+#disease-tabs > div > .tab-container[role="tablist"] button[data-tab-id="history"] {
+    border: 1px solid #e5e7eb !important;
+    background: transparent !important;
+    color: #6b7280 !important;
+    font-size: 0.82rem !important;
+    padding: 8px 14px !important;
+    min-height: unset !important;
+    align-self: center !important;
+}
+#disease-tabs > div > .tab-container[role="tablist"] button[data-tab-id="history"].selected {
+    border-color: #d1d5db !important;
+    background: #f9fafb !important;
+    color: #374151 !important;
+}
+#disease-tabs > div > .tab-container[role="tablist"]::after {
+    display: none !important;
+    content: none !important;
+    height: 0 !important;
+}
+#disease-tabs > div > .tab-container[role="tablist"] button::after,
+#disease-tabs > div > .tab-container[role="tablist"] button::before {
+    display: none !important;
+    content: none !important;
+    border: none !important;
+    background: none !important;
+    height: 0 !important;
+}
+ 
+/* ── Sub-tabs (inner) — defined after and more specific to always win ── */
+#disease-tabs .sub-tab-nav > div > .tab-container[role="tablist"] {
+    display: flex !important;
+    grid-template-columns: unset !important;
+    gap: 0 !important;
+    border-bottom: 1px solid #e5e7eb !important;
+    margin-bottom: 1rem !important;
+    padding: 0 !important;
+}
+#disease-tabs .sub-tab-nav > div > .tab-container[role="tablist"] button {
+    border: none !important;
+    border-radius: 0 !important;
+    border-bottom: 2px solid transparent !important;
+    background: transparent !important;
+    font-size: 0.82rem !important;
+    font-weight: 400 !important;
+    padding: 6px 14px !important;
+    color: #6b7280 !important;
+    margin: 0 !important;
+    width: auto !important;
+}
+#disease-tabs .sub-tab-nav > div > .tab-container[role="tablist"] button.selected {
+    color: #185FA5 !important;
+    border-bottom: 2px solid #185FA5 !important;
+    font-weight: 500 !important;
+    background: transparent !important;
+}
+ 
+/* ── Result card ── */
+.result-card {
+    background: var(--background-fill-secondary);
+    border: 0.5px solid var(--border-color-primary);
+    border-radius: 12px;
+    padding: 1rem 1.1rem;
+}
+.result-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 12px;
+}
+.result-title {
+    font-size: 0.875rem;
+    font-weight: 500;
+}
+.result-badge {
+    display: inline-block;
+    padding: 2px 10px;
+    border-radius: 99px;
+    font-size: 0.72rem;
+    font-weight: 500;
+}
+.badge-positive { background: #FCEBEB; color: #791F1F; }
+.badge-negative { background: #EAF3DE; color: #27500A; }
+ 
+/* Probability bars */
+.bar-section { margin-bottom: 10px; }
+.bar-labels {
+    display: flex;
+    justify-content: space-between;
+    font-size: 0.75rem;
+    color: #6b7280;
+    margin-bottom: 4px;
+}
+.bar-labels strong { color: var(--body-text-color); }
+.bar-track {
+    height: 6px;
+    background: var(--background-fill-tertiary, #e5e7eb);
+    border-radius: 99px;
+    overflow: hidden;
+}
+.bar-fill {
+    height: 100%;
+    border-radius: 99px;
+    width: 0;
+    animation: barFillIn 0.7s cubic-bezier(0.4, 0, 0.2, 1) forwards;
+}
+@keyframes barFillIn {
+    to { width: var(--bar-width); }
+}
+.bar-fill-cvd  { background: #185FA5; animation-delay: 0.05s; }
+.bar-fill-htn  { background: #0F6E56; animation-delay: 0.05s; }
+.bar-fill-conf { animation-delay: 0.25s; }
+ 
+/* Stat boxes */
+.stats-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+    margin: 10px 0;
+}
+.stat-box {
+    background: var(--background-fill-primary);
+    border: 0.5px solid var(--border-color-primary);
+    border-radius: 8px;
+    padding: 10px 12px;
+}
+.stat-val { font-size: 1.2rem; font-weight: 500; }
+.stat-lbl { font-size: 0.7rem; color: #9ca3af; margin-top: 1px; }
+ 
+/* Model pill */
+.model-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    background: var(--background-fill-tertiary, #f3f4f6);
+    border-radius: 99px;
+    padding: 3px 10px;
+    font-size: 0.7rem;
+    color: #6b7280;
+    margin-bottom: 10px;
+}
+.pill-dot {
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    display: inline-block;
+}
+.pill-dot-cvd { background: #185FA5; }
+.pill-dot-htn { background: #0F6E56; }
+ 
+/* Disclaimer */
+.disclaimer {
+    background: #FAEEDA;
+    border: 0.5px solid #FAC775;
+    border-radius: 8px;
+    padding: 8px 12px;
+    font-size: 0.72rem;
+    color: #633806;
+    line-height: 1.5;
+    margin-top: 4px;
+}
+ 
+/* Primary buttons */
+.btn-cvd > button { background: #185FA5 !important; color: #fff !important; border: none !important; }
+.btn-htn > button { background: #0F6E56 !important; color: #fff !important; border: none !important; }
+.btn-cvd > button:hover { background: #144f8a !important; }
+.btn-htn > button:hover { background: #0a4f3b !important; }
 """
 
+# Results HTML Builder
+ 
+def build_result_card(task: str, model_name: str, prob: float, pred: int, confidence: float) -> str:
+    """Return styled HTML result card."""
+    disease_key = "cvd" if task == "CVD Risk" else "htn"
+    task_label  = "Cardiovascular risk" if task == "CVD Risk" else "Hypertension"
+    risk_label  = "Positive" if pred == 1 else "Negative"
+    badge_class = "badge-positive" if pred == 1 else "badge-negative"
+    bar_class   = f"bar-fill-{disease_key}"
+    dot_class   = f"pill-dot-{disease_key}"
+ 
+    prob_pct = f"{prob * 100:.1f}%"
+    conf_pct = f"{confidence * 100:.1f}%"
+ 
+    return f"""
+<div class="result-card">
+  <div class="result-header">
+    <span class="result-title">{task_label} prediction</span>
+    <span class="result-badge {badge_class}">{risk_label}</span>
+  </div>
+ 
+  <div class="bar-section">
+    <div class="bar-labels"><span>Probability</span><strong>{prob_pct}</strong></div>
+    <div class="bar-track">
+      <div class="bar-fill {bar_class}" style="--bar-width:{prob_pct}"></div>
+    </div>
+  </div>
+ 
+  <div class="bar-section">
+    <div class="bar-labels"><span>Confidence</span><strong>{conf_pct}</strong></div>
+    <div class="bar-track">
+      <div class="bar-fill {bar_class} bar-fill-conf" style="--bar-width:{conf_pct}"></div>
+    </div>
+  </div>
+ 
+  <div class="stats-row">
+    <div class="stat-box"><div class="stat-val">{prob_pct}</div><div class="stat-lbl">Probability</div></div>
+    <div class="stat-box"><div class="stat-val">{conf_pct}</div><div class="stat-lbl">Confidence</div></div>
+  </div>
+ 
+  <div class="model-pill">
+    <span class="pill-dot {dot_class}"></span>
+    {model_name} &nbsp;·&nbsp; {task_label}
+  </div>
+ 
+  <div class="disclaimer">
+    Research tool only — not for clinical diagnosis.
+    Physician review required before any clinical decision.
+  </div>
+</div>
+"""
+ 
+ 
+EMPTY_RESULT = """
+<div style="color:#9ca3af;font-size:0.82rem;text-align:center;padding:2.5rem 1rem;line-height:1.7">
+  Upload a retinal fundus image<br>and click <em>Run prediction</em> to see results.
+</div>
+"""
+ 
+ 
+#Predict Wrapper
+ 
+def predict_html(image, task, model_name, age, sex):
+    """Wraps predict() and returns an HTML card + raw FHIR JSON."""
+    if image is None:
+        raise gr.Error("Please upload a retinal fundus image.")
+    if not model_name:
+        raise gr.Error("Please select a model.")
+ 
+    metadata = {}
+    if age is not None and age != "":
+        metadata["age"] = float(age)
+    if sex is not None and sex != "":
+        metadata["sex"] = int(sex)
+ 
+    model, preprocessing_config = load_model(task, model_name)
+    image_tensor = preprocess_image(np.array(image), preprocessing_config)
+    result = run_inference(model, image_tensor, metadata)
+ 
+    prob       = result["probability"]
+    pred       = result["prediction"]
+    confidence = result["confidence"]
+ 
+    card = build_result_card(task, model_name, prob, pred, confidence)
+ 
+    fhir_observation = generate_fhir_observation(
+        task=task,
+        model_name=model_name,
+        probability=prob,
+        prediction=pred,
+        metadata=metadata,
+    )
+ 
+    return card, json.dumps(fhir_observation, indent=2)
+ 
+ 
+#Shared sub-tabs builder
+ 
+def build_prediction_subtabs(task: str, session_history: gr.State) -> dict:
+    """
+    Builds the 4 sub-tabs (Prediction, Compare, Dual Eye, Saliency Map) for a
+    given task string ("CVD Risk" or "Hypertension").
+    Returns a dict of components needed for cross-tab event wiring.
+    """
+    slug = "cvd" if task == "CVD Risk" else "htn"
+    btn_class = f"btn-{slug}"
+    initial_choices = get_model_choices(task)
+    initial_model   = initial_choices[0] if initial_choices else None
+    initial_desc    = get_model_description(task, initial_model) if initial_model else ""
+ 
+    components = {}
+ 
+    # Freeze the task string as a Gradio State component so it is always
+    # created inside the Blocks context and never constructed ad-hoc in a
+    # loop or outside the layout
+    task_state = gr.State(task)
+ 
+    with gr.Tabs(elem_classes=["sub-tab-nav"]):
+ 
+        # Tab 1: Prediction
+        with gr.Tab("Prediction"):
+            with gr.Row():
+                with gr.Column(scale=1):
+                    model_dd = gr.Dropdown(
+                        choices=initial_choices,
+                        value=initial_model,
+                        label="Model",
+                        info="Select which trained model to use",
+                    )
+                    model_desc = gr.Textbox(
+                        value=initial_desc,
+                        label="Model info",
+                        interactive=False,
+                        lines=2,
+                    )
+                    image_input = gr.Image(
+                        label="Retinal fundus image",
+                        type="pil",
+                        sources=["upload", "clipboard"],
+                        height=280,
+                    )
+                    with gr.Accordion("Patient metadata (optional)", open=False):
+                        age_input = gr.Number(label="Age", precision=0, minimum=0, maximum=120)
+                        sex_input = gr.Dropdown(
+                            choices=[("Female", 0), ("Male", 1)],
+                            label="Sex",
+                            type="index",
+                        )
+                    predict_btn = gr.Button(
+                        "Run prediction",
+                        variant="primary",
+                        size="lg",
+                        elem_classes=btn_class,
+                    )
+ 
+                with gr.Column(scale=1):
+                    result_output = gr.HTML(value=EMPTY_RESULT)
+                    with gr.Accordion("FHIR R4 observation (JSON)", open=False):
+                        fhir_output = gr.Code(language="json", label="FHIR output", lines=18)
+                        fhir_download_btn = gr.Button("Download FHIR JSON", size="sm")
+                        fhir_file = gr.File(label="Download", visible=False)
+ 
+            model_dd.change(
+                fn=lambda m: get_model_description(task, m),
+                inputs=[model_dd],
+                outputs=[model_desc],
+            )
+ 
+        # Tab 2: Compare all models
+        with gr.Tab("Compare models"):
+            gr.Markdown("Run all available models on the same image and compare predictions side by side.")
+            with gr.Row():
+                with gr.Column(scale=1):
+                    cmp_image = gr.Image(
+                        label="Retinal fundus image",
+                        type="pil",
+                        sources=["upload", "clipboard"],
+                        height=280,
+                    )
+                    with gr.Accordion("Patient metadata (optional)", open=False):
+                        cmp_age = gr.Number(label="Age", precision=0)
+                        cmp_sex = gr.Dropdown(choices=[("Female", 0), ("Male", 1)], label="Sex", type="index")
+                    cmp_btn = gr.Button("Compare all models", variant="primary", elem_classes=btn_class)
+                with gr.Column(scale=1):
+                    cmp_output = gr.Markdown(value="*Upload an image and click Compare all models.*")
+ 
+            cmp_btn.click(
+                fn=compare_models,
+                inputs=[cmp_image, task_state, cmp_age, cmp_sex],
+                outputs=[cmp_output],
+            )
+ 
+        # Tab 3: Dual Eye Prediction
+        with gr.Tab("Dual eye"):
+            gr.Markdown("Upload left and right eye images for a side-by-side prediction.")
+            with gr.Column():
+                dual_model = gr.Dropdown(
+                    choices=initial_choices,
+                    value=initial_model,
+                    label="Model",
+                )
+                with gr.Row():
+                    left_eye  = gr.Image(label="Left eye",  type="pil", sources=["upload", "clipboard"], height=240)
+                    right_eye = gr.Image(label="Right eye", type="pil", sources=["upload", "clipboard"], height=240)
+                with gr.Accordion("Patient metadata (optional)", open=False):
+                    dual_age = gr.Number(label="Age", precision=0)
+                    dual_sex = gr.Dropdown(choices=[("Female", 0), ("Male", 1)], label="Sex", type="index")
+                dual_btn = gr.Button("Analyse both eyes", variant="primary", elem_classes=btn_class)
+ 
+            with gr.Row():
+                dual_left_out  = gr.Markdown(value="*Left eye result will appear here.*")
+                dual_right_out = gr.Markdown(value="*Right eye result will appear here.*")
+            with gr.Accordion("Combined summary", open=False):
+                dual_combined = gr.Markdown(value="*Combined summary will appear here.*")
+ 
+            dual_btn.click(
+                fn=dual_predict_and_log,
+                inputs=[left_eye, right_eye, task_state, dual_model, dual_age, dual_sex, session_history],
+                outputs=[dual_left_out, dual_right_out, dual_combined, session_history],
+            )
+ 
+        # Tab 4: Generate a Saliency Map
+        with gr.Tab("Saliency map"):
+            gr.Markdown("See which retinal regions the model focuses on when making a prediction.")
+            with gr.Row():
+                with gr.Column():
+                    sal_model = gr.Dropdown(choices=initial_choices, value=initial_model, label="Model")
+                    sal_image = gr.Image(
+                        label="Retinal fundus image",
+                        type="pil",
+                        sources=["upload", "clipboard"],
+                        height=280,
+                    )
+                    sal_btn = gr.Button("Generate saliency map", variant="primary", elem_classes=btn_class)
+                with gr.Column():
+                    sal_display = gr.Image(label="Saliency overlay", height=280)
+                    sal_toggle  = gr.Button("Show original", size="sm", visible=False)
+                    sal_info    = gr.Markdown()
+ 
+            sal_overlay_state  = gr.State(None)
+            sal_original_state = gr.State(None)
+            sal_showing        = gr.State(True)
+ 
+            sal_btn.click(
+                fn=generate_saliency_and_store,
+                inputs=[sal_image, task_state, sal_model],
+                outputs=[sal_display, sal_info, sal_overlay_state, sal_original_state, sal_showing, sal_toggle],
+            )
+            sal_toggle.click(
+                fn=toggle_saliency_view,
+                inputs=[sal_showing, sal_overlay_state, sal_original_state],
+                outputs=[sal_display, sal_showing, sal_toggle],
+            )
+ 
+    # Store components needed for cross-tab wiring
+    components.update({
+        "predict_btn":   predict_btn,
+        "image_input":   image_input,
+        "model_dd":      model_dd,
+        "age_input":     age_input,
+        "sex_input":     sex_input,
+        "result_output": result_output,
+        "fhir_output":   fhir_output,
+        "fhir_download_btn": fhir_download_btn,
+        "fhir_file":     fhir_file,
+        "task_state":    task_state, 
+        "session_history": session_history,
+    })
+    return components
+
+
+# Main app builder
+ 
 def build_app() -> gr.Blocks:
     with gr.Blocks(
         title="Project Retinexis",
         css=CUSTOM_CSS,
         theme=gr.themes.Soft(),
     ) as app:
-
-        # ── Header ──
-        gr.Markdown(
-            "<h1 class='main-title'>Project Retinexis</h1>"
-            "<p class='subtitle'>Deep Learning for Non-Invasive Systemic Disease Detection from Retinal Images</p>"
-        )
-
-        # Session history state (per-user, resets on page refresh)
+ 
+        # Header
+        gr.HTML("""
+            <div class="retinexis-eyebrow">Retinal AI diagnostics</div>
+            <h1 class="retinexis-title">Project Retinexis</h1>
+            <p class="retinexis-subtitle">
+                Non-invasive systemic disease detection from fundus images
+            </p>
+        """)
+ 
         session_history = gr.State([])
-
-        with gr.Tabs() as tabs:
-
-            # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-            # TAB 1: Single Prediction [CORE]
-            # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-            with gr.Tab("Prediction", id="prediction"):
-                with gr.Row():
-
-                    # -- Left column: inputs --
-                    with gr.Column(scale=1):
-                        task_dropdown = gr.Dropdown(
-                            choices=["CVD Risk", "Hypertension"],
-                            value="CVD Risk",
-                            label="Task",
-                            info="Select the prediction task",
-                        )
-                        model_dropdown = gr.Dropdown(
-                            choices=get_model_choices("CVD Risk"),
-                            value=get_model_choices("CVD Risk")[0],
-                            label="Model",
-                            info="Select which trained model to use",
-                        )
-                        model_description = gr.Textbox(
-                            value=get_model_description("CVD Risk", get_model_choices("CVD Risk")[0]),
-                            label="Model Info",
-                            interactive=False,
-                            lines=1,
-                        )
-
-                        image_input = gr.Image(
-                            label="Upload Retinal Fundus Image",
-                            type="pil",
-                            sources=["upload", "clipboard"],
-                            height=300,
-                        )
-
-                        # Patient metadata
-                        with gr.Accordion("Patient Metadata (optional)", open=False):
-                            age_input = gr.Number(
-                                label="Patient Age",
-                                precision=0,
-                                minimum=0,
-                                maximum=120,
-                            )
-                            sex_input = gr.Dropdown(
-                                choices=[("Female", 0), ("Male", 1)],
-                                label="Sex",
-                                type="index",
-                            )
-
-                        predict_btn = gr.Button(
-                            "Run Prediction",
-                            variant="primary",
-                            size="lg",
-                        )
-
-                    # -- Right column: outputs --
-                    with gr.Column(scale=1):
-                        result_output = gr.Markdown(
-                            value="*Upload an image and click 'Run Prediction' to see results.*",
-                            label="Prediction Result",
-                        )
-                        with gr.Accordion("FHIR Observation (JSON)", open=False):
-                            fhir_output = gr.Code(
-                                language="json",
-                                label="FHIR R4 Observation",
-                                lines=20,
-                            )
-                            fhir_download_btn = gr.Button(
-                                "Download FHIR JSON",
-                                size="sm",
-                            )
-                            fhir_file = gr.File(
-                                label="Download",
-                                visible=False,
-                            )
-
-                        gr.Markdown(
-                            "<div class='disclaimer'>"
-                            "This tool is for research purposes only. Predictions should not be used "
-                            "for clinical diagnosis without review by a qualified physician."
-                            "</div>"
-                        )
-
-                # ── Wire up events ──
-
-                task_dropdown.change(
-                    fn=on_task_change,
-                    inputs=[task_dropdown],
-                    outputs=[model_dropdown, model_description],
-                )
-                model_dropdown.change(
-                    fn=on_model_change,
-                    inputs=[task_dropdown, model_dropdown],
-                    outputs=[model_description],
-                )
-            # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-            # TAB 2: Model Comparison [EXTRAS]
-            # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-            with gr.Tab("Compare Models", id="compare"):
-                gr.Markdown(
-                    "### Model Comparison\n"
-                    "Run all available models on the same image to compare predictions."
-                )
-                with gr.Row():
-                    with gr.Column(scale=1):
-                        compare_task = gr.Dropdown(
-                            choices=["CVD Risk", "Hypertension"],
-                            value="CVD Risk",
-                            label="Task",
-                        )
-                        compare_image = gr.Image(
-                            label="Upload Retinal Fundus Image",
-                            type="pil",
-                            sources=["upload", "clipboard"],
-                            height=300,
-                        )
-                        with gr.Accordion("Patient Metadata (optional)", open=False):
-                            compare_age = gr.Number(label="Patient Age", precision=0)
-                            compare_sex = gr.Dropdown(
-                                choices=[("Female", 0), ("Male", 1)],
-                                label="Sex",
-                                type="index",
-                            )
-                        compare_btn = gr.Button(
-                            "Compare All Models",
-                            variant="primary",
-                        )
-
-                    with gr.Column(scale=1):
-                        compare_output = gr.Markdown(
-                            value="*Upload an image and click 'Compare All Models' to see results.*"
-                        )
-
-                compare_btn.click(
-                    fn=compare_models,
-                    inputs=[compare_image, compare_task, compare_age, compare_sex],
-                    outputs=[compare_output],
-                )
-
-            # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-            # TAB 3: Dual Eye Input [EXTRAS]
-            # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-            with gr.Tab("Dual Eye", id="dual"):
-                gr.Markdown(
-                    "### Dual Eye Analysis\n"
-                    "Upload left and right eye images for side-by-side prediction."
-                )
-                with gr.Row():
-                    with gr.Column():
-                        dual_task = gr.Dropdown(
-                            choices=["CVD Risk", "Hypertension"],
-                            value="CVD Risk",
-                            label="Task",
-                        )
-                        dual_model = gr.Dropdown(
-                            choices=get_model_choices("CVD Risk"),
-                            value=get_model_choices("CVD Risk")[0],
-                            label="Model",
-                        )
-                        with gr.Row():
-                            left_eye_input = gr.Image(
-                                label="Left Eye",
-                                type="pil",
-                                sources=["upload", "clipboard"],
-                                height=250,
-                            )
-                            right_eye_input = gr.Image(
-                                label="Right Eye",
-                                type="pil",
-                                sources=["upload", "clipboard"],
-                                height=250,
-                            )
-                        with gr.Accordion("Patient Metadata (optional)", open=False):
-                            dual_age = gr.Number(label="Patient Age", precision=0)
-                            dual_sex = gr.Dropdown(
-                                choices=[("Female", 0), ("Male", 1)],
-                                label="Sex",
-                                type="index",
-                            )
-                        dual_btn = gr.Button(
-                            "Analyse Both Eyes",
-                            variant="primary",
-                        )
-
-                with gr.Row():
-                    dual_output_left = gr.Markdown(
-                        value="*Left eye result will appear here.*",
-                        label="Left Eye Result",
-                    )
-                    dual_output_right = gr.Markdown(
-                        value="*Right eye result will appear here.*",
-                        label="Right Eye Result",
-                    )
-                with gr.Accordion("Combined Summary", open=False):
-                    dual_output_combined = gr.Markdown(
-                        value="*Combined summary will appear here.*",
-                    )
-
-                # Update model dropdown when task changes
-                dual_task.change(
-                    fn=lambda t: gr.update(choices=get_model_choices(t), value=get_model_choices(t)[0]),
-                    inputs=[dual_task],
-                    outputs=[dual_model],
-                )
-
-            # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-            # TAB 4: Saliency / Attention [EXTRAS]
-            # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-            with gr.Tab("Saliency Map", id="saliency"):
-                gr.Markdown(
-                    "### Attention & Saliency Visualisation\n"
-                    "See which regions of the retinal image the model focuses on."
-                )
-                with gr.Row():
-                    with gr.Column():
-                        sal_task = gr.Dropdown(
-                            choices=["CVD Risk", "Hypertension"],
-                            value="CVD Risk",
-                            label="Task",
-                        )
-                        sal_model = gr.Dropdown(
-                            choices=get_model_choices("CVD Risk"),
-                            value=get_model_choices("CVD Risk")[0],
-                            label="Model",
-                        )
-                        sal_image = gr.Image(
-                            label="Upload Retinal Fundus Image",
-                            type="pil",
-                            sources=["upload", "clipboard"],
-                            height=300,
-                        )
-                        sal_btn = gr.Button(
-                            "Generate Saliency Map",
-                            variant="primary",
-                        )
-
-                    with gr.Column():
-                        sal_display = gr.Image(
-                            label="Saliency Overlay",
-                            height=300,
-                        )
-                        sal_toggle_btn = gr.Button(
-                            "Show Original",
-                            size="sm",
-                            visible=False,
-                        )
-                        sal_info = gr.Markdown()
-
-                # States for toggle
-                sal_overlay_state = gr.State(None)
-                sal_original_state = gr.State(None)
-                sal_showing_overlay = gr.State(True)
-
-                # Update model dropdown when task changes
-                sal_task.change(
-                    fn=lambda t: gr.update(choices=get_model_choices(t), value=get_model_choices(t)[0]),
-                    inputs=[sal_task],
-                    outputs=[sal_model],
-                )
-
-                sal_btn.click(
-                    fn=generate_saliency_and_store,
-                    inputs=[sal_image, sal_task, sal_model],
-                    outputs=[sal_display, sal_info, sal_overlay_state, sal_original_state, sal_showing_overlay, sal_toggle_btn],
-                )
-
-                sal_toggle_btn.click(
-                    fn=toggle_saliency_view,
-                    inputs=[sal_showing_overlay, sal_overlay_state, sal_original_state],
-                    outputs=[sal_display, sal_showing_overlay, sal_toggle_btn],
-                )
-
-            # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-            # TAB 5: Session History [EXTRAS]
-            # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ 
+        # History tab lives outside disease tabs as it is shared
+        with gr.Tabs(elem_id="disease-tabs") as top_tabs:
+ 
+            # CVD Risk
+            with gr.Tab("❤  Cardiovascular risk", id="cvd"):
+                cvd = build_prediction_subtabs("CVD Risk", session_history)
+ 
+            # Hypertension
+            with gr.Tab("🩺  Hypertension", id="htn"):
+                htn = build_prediction_subtabs("Hypertension", session_history)
+ 
+            # History (shared)
             with gr.Tab("History", id="history"):
                 gr.Markdown(
-                    "### Session History\n"
+                    "### Session history\n"
                     "All predictions made during this session. Resets on page refresh."
                 )
                 history_gallery = gr.Gallery(
-                    label="Uploaded Images",
+                    label="Uploaded images",
                     columns=4,
                     height=200,
                     object_fit="cover",
                 )
-                history_md = gr.Markdown(
-                    value="*No predictions yet in this session.*"
-                )
-                clear_history_btn = gr.Button("Clear History", variant="stop", size="sm")
-
-                clear_history_btn.click(
+                history_md = gr.Markdown(value="*No predictions yet in this session.*")
+                clear_btn  = gr.Button("Clear history", variant="stop", size="sm")
+ 
+                clear_btn.click(
                     fn=clear_history,
                     inputs=[],
                     outputs=[session_history, history_gallery, history_md],
                 )
-
-        # ── Cross-tab event wiring (requires all components to be defined first) ──
-
-        predict_btn.click(
-            fn=predict_and_log,
-            inputs=[image_input, task_dropdown, model_dropdown, age_input, sex_input, session_history],
-            outputs=[result_output, fhir_output, session_history, history_gallery, history_md],
-        )
-
-        dual_btn.click(
-            fn=dual_predict_and_log,
-            inputs=[left_eye_input, right_eye_input, dual_task, dual_model, dual_age, dual_sex, session_history],
-            outputs=[dual_output_left, dual_output_right, dual_output_combined, session_history, history_gallery, history_md],
-        )
-
+ 
+        # Cross-tab event wiring (all components now defined)
+ 
+        for tab in (cvd, htn):
+            tab["predict_btn"].click(
+                fn=predict_and_log,
+                inputs=[
+                    tab["image_input"],
+                    tab["task_state"],   # gr.State created inside Blocks
+                    tab["model_dd"],
+                    tab["age_input"],
+                    tab["sex_input"],
+                    session_history,
+                ],
+                outputs=[
+                    tab["result_output"],
+                    tab["fhir_output"],
+                    session_history,
+                    history_gallery,
+                    history_md,
+                ],
+            )
+ 
     return app
-
-
-
+ 
+ 
 # Entry point
-
-
+ 
 if __name__ == "__main__":
     app = build_app()
     app.launch(
         server_name="0.0.0.0",
         server_port=7860,
-        share=False,  # Set True to generate a public link
+        share=False,
     )
