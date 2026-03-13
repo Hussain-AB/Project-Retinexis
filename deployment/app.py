@@ -887,6 +887,14 @@ CUSTOM_CSS = """
     font-weight: 500 !important;
     background: transparent !important;
 }
+
+/* ── Sticky run button ── */
+.btn-cvd > button, .btn-htn > button {
+    position: sticky !important;
+    bottom: 1rem !important;
+    z-index: 10 !important;
+    box-shadow: 0 2px 12px rgba(0,0,0,0.12) !important;
+}
  
 /* ── Result card ── */
 .result-card {
@@ -1061,38 +1069,44 @@ EMPTY_RESULT = """
  
 #Predict Wrapper
  
-def predict_html(image, task, model_name, age, sex):
-    """Wraps predict() and returns an HTML card + raw FHIR JSON."""
-    if image is None:
-        raise gr.Error("Please upload a retinal fundus image.")
-    if not model_name:
-        raise gr.Error("Please select a model.")
- 
-    metadata = {}
-    if age is not None and age != "":
-        metadata["age"] = float(age)
-    if sex is not None and sex != "":
-        metadata["sex"] = int(sex)
- 
-    model, preprocessing_config = load_model(task, model_name)
-    image_tensor = preprocess_image(np.array(image), preprocessing_config)
-    result = run_inference(model, image_tensor, metadata)
- 
-    prob       = result["probability"]
-    pred       = result["prediction"]
-    confidence = result["confidence"]
- 
-    card = build_result_card(task, model_name, prob, pred, confidence)
- 
-    fhir_observation = generate_fhir_observation(
-        task=task,
-        model_name=model_name,
-        probability=prob,
-        prediction=pred,
-        metadata=metadata,
+def predict_and_log_html(image, task, model_name, age, sex, history):
+    """Intercepts predict_and_log and replaces markdown summary with HTML card."""
+    summary, fhir, updated, gallery, history_md = predict_and_log(
+        image, task, model_name, age, sex, history
     )
+    import re
+    try:
+        prob       = float(re.search(r"Probability:\*\* ([\d.]+)%", summary).group(1)) / 100
+        confidence = float(re.search(r"Confidence:\*\* ([\d.]+)%", summary).group(1)) / 100
+        pred       = 1 if "Positive" in summary else 0
+        card = build_result_card(task, model_name, prob, pred, confidence)
+    except Exception:
+        card = f"<div style='padding:1rem'>{summary}</div>"
+    return card, fhir, updated, gallery, history_md
+
+def _summary_to_card(summary, task, model_name):
+    """Parse a predict() markdown summary and return an HTML result card."""
+    import re
+    if summary.startswith("*No image"):
+        return f"<div style='color:#9ca3af;font-size:0.82rem;padding:1rem'>{summary}</div>"
+    try:
+        prob       = float(re.search(r"Probability:\*\* ([\d.]+)%", summary).group(1)) / 100
+        confidence = float(re.search(r"Confidence:\*\* ([\d.]+)%", summary).group(1)) / 100
+        pred       = 1 if "Positive" in summary else 0
+        return build_result_card(task, model_name, prob, pred, confidence)
+    except Exception:
+        return f"<div style='padding:1rem'>{summary}</div>"
  
-    return card, json.dumps(fhir_observation, indent=2)
+ 
+def dual_predict_and_log_html(image_left, image_right, task, model_name, age, sex, history):
+    """Intercepts dual_predict_and_log and replaces summaries with HTML cards."""
+    left_summary, right_summary, combined_summary, updated, gallery, history_md = dual_predict_and_log(
+        image_left, image_right, task, model_name, age, sex, history
+    )
+    left_card     = _summary_to_card(left_summary,  task, model_name)
+    right_card    = _summary_to_card(right_summary, task, model_name)
+    combined_card = f"<div>{left_card}</div><hr style='margin:1rem 0;border:none;border-top:1px solid #e5e7eb'><div>{right_card}</div>"
+    return left_card, right_card, combined_card, updated, gallery, history_md
  
  
 #Shared sub-tabs builder
@@ -1118,27 +1132,34 @@ def build_prediction_subtabs(task: str, session_history: gr.State) -> dict:
  
     with gr.Tabs(elem_classes=["sub-tab-nav"]):
  
-        # Tab 1: Prediction
+        # ── Prediction ────────────────────────────────────────────────────
         with gr.Tab("Prediction"):
+ 
+            # Model selector row — above the two columns
             with gr.Row():
-                with gr.Column(scale=1):
+                with gr.Column(scale=2):
                     model_dd = gr.Dropdown(
                         choices=initial_choices,
                         value=initial_model,
                         label="Model",
                         info="Select which trained model to use",
                     )
+                with gr.Column(scale=3):
                     model_desc = gr.Textbox(
                         value=initial_desc,
                         label="Model info",
                         interactive=False,
-                        lines=2,
+                        lines=1,
                     )
+ 
+            # Main two-column area
+            with gr.Row():
+                with gr.Column(scale=1):
                     image_input = gr.Image(
                         label="Retinal fundus image",
                         type="pil",
                         sources=["upload", "clipboard"],
-                        height=280,
+                        height=380,
                     )
                     with gr.Accordion("Patient metadata (optional)", open=False):
                         age_input = gr.Number(label="Age", precision=0, minimum=0, maximum=120)
@@ -1147,12 +1168,6 @@ def build_prediction_subtabs(task: str, session_history: gr.State) -> dict:
                             label="Sex",
                             type="index",
                         )
-                    predict_btn = gr.Button(
-                        "Run prediction",
-                        variant="primary",
-                        size="lg",
-                        elem_classes=btn_class,
-                    )
  
                 with gr.Column(scale=1):
                     result_output = gr.HTML(value=EMPTY_RESULT)
@@ -1161,15 +1176,24 @@ def build_prediction_subtabs(task: str, session_history: gr.State) -> dict:
                         fhir_download_btn = gr.Button("Download FHIR JSON", size="sm")
                         fhir_file = gr.File(label="Download", visible=False)
  
+            # Run button — full width at the bottom
+            predict_btn = gr.Button(
+                "Run prediction",
+                variant="primary",
+                size="lg",
+                elem_classes=btn_class,
+            )
+ 
             model_dd.change(
                 fn=lambda m: get_model_description(task, m),
                 inputs=[model_dd],
                 outputs=[model_desc],
             )
  
+ 
         # Tab 2: Compare all models
         with gr.Tab("Compare models"):
-            gr.Markdown("Run all available models on the same image and compare predictions side by side.")
+            gr.Markdown("Run all available models on the same image and compare predictions simultaneously.")
             with gr.Row():
                 with gr.Column(scale=1):
                     cmp_image = gr.Image(
@@ -1193,7 +1217,7 @@ def build_prediction_subtabs(task: str, session_history: gr.State) -> dict:
  
         # Tab 3: Dual Eye Prediction
         with gr.Tab("Dual eye"):
-            gr.Markdown("Upload left and right eye images for a side-by-side prediction.")
+            gr.Markdown("Upload left and right eye images of patient for an all inclusive prediction.")
             with gr.Column():
                 dual_model = gr.Dropdown(
                     choices=initial_choices,
@@ -1209,16 +1233,9 @@ def build_prediction_subtabs(task: str, session_history: gr.State) -> dict:
                 dual_btn = gr.Button("Analyse both eyes", variant="primary", elem_classes=btn_class)
  
             with gr.Row():
-                dual_left_out  = gr.Markdown(value="*Left eye result will appear here.*")
-                dual_right_out = gr.Markdown(value="*Right eye result will appear here.*")
-            with gr.Accordion("Combined summary", open=False):
-                dual_combined = gr.Markdown(value="*Combined summary will appear here.*")
- 
-            dual_btn.click(
-                fn=dual_predict_and_log,
-                inputs=[left_eye, right_eye, task_state, dual_model, dual_age, dual_sex, session_history],
-                outputs=[dual_left_out, dual_right_out, dual_combined, session_history],
-            )
+                dual_left_out  = gr.HTML(value="<div style='color:#9ca3af;font-size:0.82rem;padding:1rem'>Left eye result will appear here.</div>")
+                dual_right_out = gr.HTML(value="<div style='color:#9ca3af;font-size:0.82rem;padding:1rem'>Right eye result will appear here.</div>")
+            dual_combined = gr.HTML(visible= False)
  
         # Tab 4: Generate a Saliency Map
         with gr.Tab("Saliency map"):
@@ -1266,6 +1283,15 @@ def build_prediction_subtabs(task: str, session_history: gr.State) -> dict:
         "fhir_file":     fhir_file,
         "task_state":    task_state, 
         "session_history": session_history,
+        "dual_btn":      dual_btn,
+        "left_eye":      left_eye,
+        "right_eye":     right_eye,
+        "dual_model":    dual_model,
+        "dual_age":      dual_age,
+        "dual_sex":      dual_sex,
+        "dual_left_out": dual_left_out,
+        "dual_right_out": dual_right_out,
+        "dual_combined": dual_combined,
     })
     return components
 
@@ -1282,9 +1308,9 @@ def build_app() -> gr.Blocks:
         # Header
         gr.HTML("""
             <div class="retinexis-eyebrow">Retinal AI diagnostics</div>
-            <h1 class="retinexis-title">Project Retinexis</h1>
+            <h1 class="retinexis-title">Retinexis</h1>
             <p class="retinexis-subtitle">
-                Non-invasive systemic disease detection from fundus images
+                From fundus to diagnosis
             </p>
         """)
  
@@ -1326,7 +1352,7 @@ def build_app() -> gr.Blocks:
  
         for tab in (cvd, htn):
             tab["predict_btn"].click(
-                fn=predict_and_log,
+                fn=predict_and_log_html,
                 inputs=[
                     tab["image_input"],
                     tab["task_state"],   # gr.State created inside Blocks
@@ -1338,6 +1364,26 @@ def build_app() -> gr.Blocks:
                 outputs=[
                     tab["result_output"],
                     tab["fhir_output"],
+                    session_history,
+                    history_gallery,
+                    history_md,
+                ],
+            )
+            tab["dual_btn"].click(
+                fn=dual_predict_and_log_html,
+                inputs=[
+                    tab["left_eye"],
+                    tab["right_eye"],
+                    tab["task_state"],
+                    tab["dual_model"],
+                    tab["dual_age"],
+                    tab["dual_sex"],
+                    session_history,
+                ],
+                outputs=[
+                    tab["dual_left_out"],
+                    tab["dual_right_out"],
+                    tab["dual_combined"],
                     session_history,
                     history_gallery,
                     history_md,
