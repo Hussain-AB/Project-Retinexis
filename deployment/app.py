@@ -765,6 +765,11 @@ CUSTOM_CSS = """
 @import url('https://fonts.googleapis.com/css2?family=DM+Serif+Display&display=swap');
  
 /* ── Header ── */
+/* ── Top border stripe ── */
+.gradio-container {
+    border-top: 8px solid #185FA5 !important;
+}
+/* ── Header retinal pattern ── */
 .retinexis-eyebrow {
     text-align: center;
     font-size: 0.7rem;
@@ -788,6 +793,36 @@ CUSTOM_CSS = """
     font-size: 0.85rem;
     margin-bottom: 1.5rem;
 }
+.retinexis-header-wrap {
+    position: relative;
+    text-align: center;
+    padding: 2rem 0 0.5rem;
+    overflow: visible;
+}
+.retinexis-header-wrap::before {
+    content: '';
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    width: 400px;
+    height: 400px;
+    border-radius: 50%;
+    border: 48px solid rgba(24, 95, 165, 0.05);
+    pointer-events: none;
+}
+.retinexis-header-wrap::after {
+    content: '';
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    width: 240px;
+    height: 240px;
+    border-radius: 50%;
+    border: 30px solid rgba(29, 158, 117, 0.06);
+    pointer-events: none;
+}
  
 /* ── Disease tab bar (outer) — scoped to exclude sub-tab-nav ── */
 #disease-tabs,
@@ -800,7 +835,7 @@ CUSTOM_CSS = """
     grid-template-columns: 1fr 1fr auto !important;
     gap: 10px !important;
     border-bottom: none !important;
-    margin-bottom: 2.5rem !important;
+    margin-bottom: 3rem !important;
     padding: 4px !important;
 }
 #disease-tabs > div > .tab-container[role="tablist"] button {
@@ -887,7 +922,7 @@ CUSTOM_CSS = """
     font-weight: 500 !important;
     background: transparent !important;
 }
-
+ 
 /* ── Sticky run button ── */
 .btn-cvd > button, .btn-htn > button {
     position: sticky !important;
@@ -896,12 +931,15 @@ CUSTOM_CSS = """
     box-shadow: 0 2px 12px rgba(0,0,0,0.12) !important;
 }
  
-/* ── Result card ── */
 .result-card {
     background: var(--background-fill-secondary);
     border: 0.5px solid var(--border-color-primary);
+    border-left: 3px solid #185FA5;
     border-radius: 12px;
     padding: 1rem 1.1rem;
+}
+.result-card.htn {
+    border-left-color: #0F6E56;
 }
 .result-header {
     display: flex;
@@ -1022,7 +1060,8 @@ def build_result_card(task: str, model_name: str, prob: float, pred: int, confid
     conf_pct = f"{confidence * 100:.1f}%"
  
     return f"""
-<div class="result-card">
+
+<div class="result-card{' htn' if disease_key == 'htn' else ''}">
   <div class="result-header">
     <span class="result-title">{task_label} prediction</span>
     <span class="result-badge {badge_class}">{risk_label}</span>
@@ -1193,7 +1232,7 @@ def build_prediction_subtabs(task: str, session_history: gr.State) -> dict:
  
         # Tab 2: Compare all models
         with gr.Tab("Compare models"):
-            gr.Markdown("Run all available models on the same image and compare predictions simultaneously.")
+            gr.Markdown("Analyze the image with all available models and compare predictions side-by-side.")
             with gr.Row():
                 with gr.Column(scale=1):
                     cmp_image = gr.Image(
@@ -1217,7 +1256,7 @@ def build_prediction_subtabs(task: str, session_history: gr.State) -> dict:
  
         # Tab 3: Dual Eye Prediction
         with gr.Tab("Dual eye"):
-            gr.Markdown("Upload left and right eye images of patient for an all inclusive prediction.")
+            gr.Markdown("Upload left and right eye images for a complete analysis.")
             with gr.Column():
                 dual_model = gr.Dropdown(
                     choices=initial_choices,
@@ -1307,11 +1346,12 @@ def build_app() -> gr.Blocks:
  
         # Header
         gr.HTML("""
-            <div class="retinexis-eyebrow">Retinal AI diagnostics</div>
-            <h1 class="retinexis-title">Retinexis</h1>
-            <p class="retinexis-subtitle">
-                From fundus to diagnosis
-            </p>
+            <div class="retinexis-header-wrap">
+                <div class="retinexis-circles"></div>
+                <div class="retinexis-eyebrow">Retinal AI diagnostics</div>
+                <h1 class="retinexis-title">Retinexis</h1>
+                <p class="retinexis-subtitle">The eye knows more than it sees</p>
+            </div>
         """)
  
         session_history = gr.State([])
