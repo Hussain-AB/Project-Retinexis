@@ -116,6 +116,9 @@ class TrainLogger:
 
         # W&B (if active)
         if self.use_wandb and self._wandb_run is not None:
+            sens = val_metrics.get("sensitivity", 0.0)
+            spec = val_metrics.get("specificity", 0.0)
+            hmean = 2 * sens * spec / (sens + spec) if (sens + spec) > 0 else 0.0
             log_dict = {
                 "epoch": epoch,
                 "phase": phase,
@@ -125,8 +128,9 @@ class TrainLogger:
                 "val/auprc": val_metrics.get("auprc", 0.0),
                 "val/ece": val_metrics.get("ece", 0.0),
                 "val/f1": val_metrics.get("f1", 0.0),
-                "val/sensitivity": val_metrics.get("sensitivity", 0.0),
-                "val/specificity": val_metrics.get("specificity", 0.0),
+                "val/sensitivity": sens,
+                "val/specificity": spec,
+                "val/harmonic_mean": hmean,
                 "lr": lr,
                 "epoch_time_sec": elapsed,
             }
