@@ -10,17 +10,23 @@ Model flow:
 
 from __future__ import annotations
 
+import os
 from collections.abc import Mapping
+from pathlib import Path
 
 import timm
 import torch
 import torch.nn as nn
 from huggingface_hub import hf_hub_download
+from timm.models.swin_transformer_v2 import SwinTransformerV2, checkpoint_filter_fn
 
 from .base import BaseClassifier, IMAGENET_NORM, PreprocessingConfig
 
 
 _HF_REPO_ID = "zdaxie/SimMIM"
+
+# Resolve the project root so we can find data/weights/ from anywhere.
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]  # src/models/../../ = project root
 
 VARIANT_CONFIG = {
     "small": {
@@ -42,10 +48,21 @@ VARIANT_CONFIG = {
         "input_size": 256,
     },
     "giant": {
-        "model_name": "swinv2_giant_window16_256",
-        "checkpoint_file": "simmim_swinv2_finetune_models/finetune_swinv2_giant_1k_500k.pth",
+        # Not in timm's registry — architecture is constructed manually.
+        "model_name": None,
+        "checkpoint_file": "data/weights/swinv2_giant_22k_500k.pth",
         "feature_dim": 4096,
         "input_size": 256,
+        "local_weights": True,
+        # SwinV2-G architecture hyperparameters (from the SwinV2 paper).
+        "arch_kwargs": {
+            "img_size": 256,
+            "patch_size": 4,
+            "window_size": 16,
+            "embed_dim": 512,
+            "depths": (2, 2, 42, 4),
+            "num_heads": (16, 32, 64, 128),
+        },
     },
 }
 
@@ -84,21 +101,47 @@ class SWANv2Classifier(BaseClassifier):
             model_name=config["model_name"],
             checkpoint_file=config["checkpoint_file"],
             pretrained=pretrained,
+            config=config,
         )
         self._feature_dim = int(getattr(self._backbone, "num_features", config["feature_dim"]))
         self._head = nn.Linear(self._feature_dim, 1)
 
     @staticmethod
     def _load_backbone(
-        model_name: str,
+        model_name: str | None,
         checkpoint_file: str,
         pretrained: bool,
+        config: dict | None = None,
     ) -> nn.Module:
-        backbone = timm.create_model(model_name, pretrained=False, num_classes=0)
+        # --- Giant variant: not in timm registry, build manually ---
+        if model_name is None:
+            if config is None or "arch_kwargs" not in config:
+                raise RuntimeError(
+                    "Giant variant requires 'arch_kwargs' in its config."
+                )
+            backbone = SwinTransformerV2(
+                num_classes=0,
+                **config["arch_kwargs"],
+            )
+        else:
+            backbone = timm.create_model(model_name, pretrained=False, num_classes=0)
+
         if not pretrained:
             return backbone
 
-        checkpoint_path = hf_hub_download(repo_id=_HF_REPO_ID, filename=checkpoint_file)
+        # --- Resolve checkpoint path ---
+        is_local = config is not None and config.get("local_weights", False)
+        if is_local:
+            checkpoint_path = str(_PROJECT_ROOT / checkpoint_file)
+            if not os.path.isfile(checkpoint_path):
+                raise FileNotFoundError(
+                    f"Local weights not found: {checkpoint_path}"
+                )
+        else:
+            checkpoint_path = hf_hub_download(
+                repo_id=_HF_REPO_ID, filename=checkpoint_file
+            )
+
         checkpoint = torch.load(checkpoint_path, map_location="cpu")
 
         if not isinstance(checkpoint, Mapping):
@@ -107,11 +150,19 @@ class SWANv2Classifier(BaseClassifier):
         if not isinstance(state_dict, Mapping):
             raise RuntimeError("Unsupported SimMIM checkpoint format.")
 
-        state_dict = SWANv2Classifier._normalize_state_dict_keys(state_dict)
+        # Use timm's own filter for SwinV2 checkpoints (handles key remapping
+        # and buffer skipping), then fall back to our normaliser.
+        if model_name is None:
+            state_dict = checkpoint_filter_fn(state_dict, backbone)
+        else:
+            state_dict = SWANv2Classifier._normalize_state_dict_keys(state_dict)
+
         if not state_dict:
             raise RuntimeError(f"No encoder weights found in '{checkpoint_file}'.")
 
-        backbone.load_state_dict(state_dict, strict=False)
+        msg = backbone.load_state_dict(state_dict, strict=False)
+        print(f"  SwinV2 weights loaded: missing={len(msg.missing_keys)}, "
+              f"unexpected={len(msg.unexpected_keys)}")
         return backbone
 
     @staticmethod
