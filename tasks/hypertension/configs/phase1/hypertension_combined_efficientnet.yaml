@@ -1,0 +1,64 @@
+# EfficientNet-B0 Phase 1 (Linear Probe) — Combined Hypertension Dataset
+# Template config. Copy and modify for other models/datasets.
+
+# Identity
+dataset: hypertension_combined
+architecture: efficientnet
+model_kwargs:
+  variant: b0
+  pretrained: true
+  num_classes: 1
+
+# Paths
+data_dir: data/hypertension_combined/images
+labels_csv: data/hypertension_combined/metadata_processed/combined_metadata.csv
+splits_file: tasks/hypertension/splits/hypertension_combined_5fold_splits.json
+output_dir: outputs
+
+# Column mapping
+sample_id_col: image_id
+label_col: label
+patient_id_col: patient_id
+
+# Cross-validation
+fold: 0
+
+# Phase 1: Linear Probe
+phase1_epochs: 5
+phase1_lr: 1e-3
+phase1_batch_size: 64
+
+# Loss
+use_weighted_bce: true
+pos_weight: null
+
+# Metadata (disabled for image-only baseline)
+use_metadata: false
+metadata_columns: []
+metadata_head_hidden: 0
+
+# Data loading
+num_workers: 6
+pin_memory: true
+persistent_workers: true
+prefetch_factor: 2
+
+# Augmentation — aligned with CIMT data prep notebook
+aug_hflip: true
+aug_rotation: 10
+aug_scale_min: 0.98
+aug_scale_max: 1.02
+aug_brightness: 0.05
+aug_contrast: 0.05
+aug_saturation: 0.0
+aug_hue: 0.0
+aug_blur_prob: 0.4
+aug_blur_limit: 3
+aug_random_erasing: 0.0
+
+# Reproducibility
+seed: 42
+deterministic: true
+
+# Logging
+use_wandb: false
