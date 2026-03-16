@@ -23,7 +23,7 @@ def build_cosine_warmup_scheduler(
 
     def lr_lambda(current_epoch: int) -> float:
         if current_epoch < warmup_epochs:
-            return float(current_epoch) / float(max(1, warmup_epochs))
+            return float(current_epoch + 1) / float(max(1, warmup_epochs))
 
         # cosine decay
         progress = float(current_epoch - warmup_epochs) / float(max(1, total_epochs - warmup_epochs)) # review: decay over remaining epochs, not total
