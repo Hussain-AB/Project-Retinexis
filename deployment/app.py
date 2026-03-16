@@ -22,7 +22,12 @@ from PIL import Image
 from datetime import datetime
 import torch
 import torch.nn as nn
+
+import torch
+from pathlib import Path
+# from src.models import create_model  # uncomment when deploying with full pipeline
 import cv2
+
 
 # [MODELS] Model registry & inference
 # ──────────────────────────────────────────────
@@ -109,8 +114,32 @@ def load_model(task: str, model_name: str):
     Checkpoints should live in: outputs/{task}/{model_name}/fold_0/checkpoints/best.pt
     (or whichever fold / ensemble strategy we decide on for deployment)
     """
-    # STUB — remove when implementing
-    return None, None
+    #look up the archectrure and variant from the TASK_MODELS dict
+    model_info = TASK_MODELS.get(task, {}).get(model_name, {})
+    architecture = model_info.get("architecture")
+    variant = model_info.get("variant")
+
+    #2. create model from the factory function
+    if variant and variant != "default":
+        model = create_model(architecture, variant=variant, pretrained=True)
+    else:
+        model = create_model(architecture, pretrained=True)
+
+    #3. load the trained checkpoint weights
+    # if model trained with meta data yiu need to load that to 
+    checkpoint_path = Path(f"outputs/{task}/{model_name}/fold_0/checkpoints/best.pt")
+    if checkpoint_path.exists():
+        checkpoint = torch.load(checkpoint_path, map_location="cpu")
+        model.load_state_dict(checkpoint["model_state_dict"])
+    else:
+        raise gr.Error(f"Checkpoint not found: {checkpoint_path}")
+
+    #4. set model to eval mode
+    model.eval()
+
+    #5. return model and preprocessing config
+    return model, model.preprocessing_config
+
 
 
 def preprocess_image(image: np.ndarray, preprocessing_config) -> np.ndarray:
@@ -129,8 +158,24 @@ def preprocess_image(image: np.ndarray, preprocessing_config) -> np.ndarray:
         - mean / std: channel-wise normalization stats
         - crop_strategy: center crop vs resize
     """
-    # STUB — remove when implementing
-    return image
+    # Read the model's required preprocessing settings
+    input_size = preprocessing_config.input_size
+    mean = preprocessing_config.mean
+    std = preprocessing_config.std
+
+    # Resize the image to the model's expected input size
+    image = cv2.resize(image, (input_size, input_size))
+    # Scale pixel values from 0-255 to 0-1
+    image = image.astype(np.float32) / 255.0
+    # Normalize using the model's expected mean and std
+    image = (image - np.array(mean)) / np.array(std)
+
+    # Convert to tensor: (H, W, C) → (1, C, H, W)
+    tensor = torch.from_numpy(image).permute(2, 0, 1).unsqueeze(0).float()
+
+    return tensor
+
+
 
 
 def run_inference(model, image_tensor, metadata: dict | None = None) -> dict:
@@ -151,12 +196,25 @@ def run_inference(model, image_tensor, metadata: dict | None = None) -> dict:
     Returns:
         dict with keys: probability, prediction, confidence
     """
-    # STUB — returns dummy prediction. Remove when implementing.
-    dummy_prob = float(np.random.uniform(0.2, 0.8))
+
+    # 1. Pick device (GPU if available, otherwise CPU)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = model.to(device)
+    image_tensor = image_tensor.to(device)
+
+
+    # 2. Run the model (no gradient needed for inference)
+    with torch.no_grad():
+        logits = model(image_tensor)
+
+     # 3. Apply sigmoid to convert logits to probability (0 to 1)
+    prob = torch.sigmoid(logits).item()
+
+    # 4. Return results
     return {
-        "probability": dummy_prob,
-        "prediction": int(dummy_prob > 0.5),
-        "confidence": abs(dummy_prob - 0.5) * 2,
+        "probability": prob,
+        "prediction": int(prob > 0.5),
+        "confidence": abs(prob - 0.5) * 2,
     }
 
 
