@@ -1,7 +1,7 @@
 """
-training.optimiser - 
+training.optimiser -
 Assigns decaying LR per backbone layer for Phase 2 fine-tuning.
- Splits params into decay/no-decay groups. 
+ Splits params into decay/no-decay groups.
 """
 
 from __future__ import annotations
@@ -25,35 +25,65 @@ def split_decay_or_no_decay(params: list[nn.Parameter]) -> tuple[list[nn.Paramet
                 decay.append(p)
         return decay, no_decay
 
-def optimiser(
+# review: must match trainer import
+def build_layer_wise_param_groups(
     model: nn.Module,
-    base_lr: float, 
+    base_lr: float,
     lr_decay_factor: float,
     weight_decay: float,
-    metadata_head: nn.Module | None = None
+    metadata_head: nn.Module | None = None,
 ) -> list[dict]:
-    head_params = []
+    # review: true layer-wise decay — lr_i = base_lr * (factor ^ (N - i))
+    # Head gets full base_lr, each backbone layer gets progressively less.
+
+    param_groups = []
+
+    # Head params (or metadata_head) — full LR
     if metadata_head is not None:
-        head_params.extend(list(metadata_head.parameters()))
+        head_params = list(metadata_head.parameters())
     else:
-        head_params.extend(list(model.head.paramaters()))
-    
-    backbone_params = list(model.backbone.parameters())
+        head_params = list(model.head.parameters())
 
-    # backbone will learn slower than the head
-    backbone_lr = base_lr * lr_decay_factor
-
-    # apply split from helper function
     head_decay, head_no_decay = split_decay_or_no_decay(head_params)
-    backbone_decay, backbone_no_decay = split_decay_or_no_decay(backbone_params)
+    param_groups.append({"params": head_decay, "lr": base_lr, "weight_decay": weight_decay})
+    param_groups.append({"params": head_no_decay, "lr": base_lr, "weight_decay": 0.0})
 
-    return [
-        {"params": head_decay, "lr":base_lr, "weight_decay": weight_decay},
-        {"params": head_no_decay, "lr": base_lr, "weight_decay": 0.0},
-        {"params": backbone_decay, "lr": backbone_lr, "weight_decay": weight_decay},
-        {"params": backbone_no_decay, "lr": backbone_lr, "weight_decay": 0.0},
-    ]
+    # Backbone — group by layer depth
+    # Most timm/torch ViTs have backbone.blocks.0, backbone.blocks.1, etc.
+    # CNNs have backbone.layer1, backbone.layer2, etc.
+    # Fall back to single group if layer structure isn't detectable.
+    backbone = model.backbone
+    layer_params = {}
 
-    
-    
+    for name, param in backbone.named_parameters():
+        if not param.requires_grad:
+            continue
+        # Extract layer index from parameter name
+        # Handles: blocks.0.xxx, blocks.11.xxx, layer1.xxx, layer2.xxx
+        parts = name.split(".")
+        layer_id = None
+        for part in parts:
+            if part.isdigit():
+                layer_id = int(part)
+                break
+            if part.startswith("layer") and part[-1].isdigit():
+                layer_id = int(part.replace("layer", ""))
+                break
+        if layer_id is None:
+            layer_id = 0  # embeddings, cls_token, etc. — earliest layer
 
+        if layer_id not in layer_params:
+            layer_params[layer_id] = []
+        layer_params[layer_id].append(param)
+
+    num_layers = max(layer_params.keys()) + 1 if layer_params else 1
+
+    for layer_id, params in sorted(layer_params.items()):
+        layer_lr = base_lr * (lr_decay_factor ** (num_layers - layer_id))
+        decay, no_decay = split_decay_or_no_decay(params)
+        if decay:
+            param_groups.append({"params": decay, "lr": layer_lr, "weight_decay": weight_decay})
+        if no_decay:
+            param_groups.append({"params": no_decay, "lr": layer_lr, "weight_decay": 0.0})
+
+    return param_groups
