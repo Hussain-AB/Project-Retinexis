@@ -29,7 +29,7 @@ phase1_lr: 1e-3
 phase1_batch_size: 64
 
 # Loss
-use_weighted_bce: false
+use_weighted_bce: true
 pos_weight: null
 
 # Metadata

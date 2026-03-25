@@ -1,0 +1,83 @@
+# DINOv2-Large Phase 2 (Fine-tune) — CIMT Dataset
+# Generalist foundation model. ViT-Large/14, 304M params.
+# No retinal data in pretraining — tests whether generalist features suffice.
+
+# Identity
+dataset: cimt
+architecture: dinov2
+model_kwargs:
+  variant: large
+  pretrained: true
+
+# Paths
+data_dir: data/cimt/Fundus_CIMT_2903_Dataset/images_preprocessed
+labels_csv: data/cimt/Fundus_CIMT_2903_Dataset/metadata_processed/processed_metadata.csv
+splits_file: tasks/cimt/splits/cimt_5fold_splits.json
+output_dir: outputs
+
+# Column mapping
+sample_id_col: image_id
+label_col: label
+patient_id_col: patient_id
+
+# Cross-validation
+fold: 0
+
+# Phase 1: skip (already completed)
+skip_phase1: true
+phase1_epochs: 5
+phase1_lr: 1e-3
+phase1_batch_size: 64
+
+# Phase 2: Fine-tune
+# 50 epochs max, early stopping monitors val AUROC.
+# Batch size 32 (down from 64) — full backward through ViT-Large
+# uses significantly more memory than frozen forward.
+# Layer-wise LR decay: earlier layers get lr * 0.65^(N-i),
+# preserving pretrained low-level features while adapting higher layers.
+# Cosine schedule with 5-epoch linear warmup prevents early instability.
+phase2_epochs: 50
+phase2_lr: 1e-4
+phase2_batch_size: 32
+lr_decay_factor: 0.65
+warmup_epochs: 5
+patience: 7
+weight_decay: 0.05
+min_lr: 1e-6
+
+# Loss
+use_weighted_bce: true
+pos_weight: null
+
+# Metadata
+use_metadata: false
+metadata_columns: []
+metadata_head_hidden: 0
+
+# Data loading
+num_workers: 4
+pin_memory: true
+persistent_workers: true
+prefetch_factor: 2
+
+# Augmentation
+aug_hflip: true
+aug_rotation: 10
+aug_scale_min: 0.98
+aug_scale_max: 1.02
+aug_brightness: 0.05
+aug_contrast: 0.05
+aug_saturation: 0.0
+aug_hue: 0.0
+aug_blur_prob: 0.4
+aug_blur_limit: 3
+aug_random_erasing: 0.0
+
+# Reproducibility
+seed: 42
+deterministic: true
+
+# Logging
+use_wandb: true
+wandb_project: retinexis
+wandb_entity: project_retinexis-king-s-college-london

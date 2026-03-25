@@ -312,7 +312,7 @@ if __name__ == "__main__":
     # ================================================
 
     # For full run: set to None
-    MAX_IMAGES = 100  # Change to None for full dataset
+    MAX_IMAGES = None  # Change to None for full dataset
     
     # Run quality control
     print(f"Images directory: {IMAGES_DIR}")

@@ -17,25 +17,49 @@ class RETFoundDINOv2(BaseClassifier):
     def __init__(self, pretrained=True):  # review: removed **kwargs — factory validates kwargs, swallowing them hides typos
         super().__init__()
 
-        # review: gate weight download on pretrained flag — test_models.py
-        # passes pretrained=False, which would fail without this guard
-        weights_path = ""
+        # Create DINOv2 ViT-Large/14 architecture (no weights yet)
+        # num_classes=0 removes the default head (we add our own)
+        self.model = timm.create_model(
+            "vit_large_patch14_dinov2.lvd142m",
+            pretrained=False,
+            num_classes=0,
+            img_size=518,  # must match checkpoint (518/14=37 patches → 1370 tokens)
+        )
+
+        # Load RETFound retinal weights if pretrained
+        # The checkpoint stores weights under a "teacher" key (DINOv2
+        # self-supervised format), so we extract and strip the prefix.
         if pretrained:
             weights_path = hf_hub_download(
                 repo_id="YukunZhou/RETFound_dinov2_meh",
                 filename="RETFound_dinov2_meh.pth",
             )
+            ckpt = torch.load(weights_path, map_location="cpu", weights_only=True)
 
-        # Create DINOv2 ViT-Large/14 architecture and load retinal weights
-        # num_classes=0 removes the default head (we add our own)
-        # this matches the official RETFound repo (models_vit.py lines 79-86)
-        self.model = timm.create_model(
-            "vit_large_patch14_dinov2.lvd142m",
-            pretrained=False,
-            num_classes=0,
-            img_size=224,
-            checkpoint_path=weights_path,
-        )
+            # Handle nested checkpoint formats
+            if "teacher" in ckpt:
+                state_dict = ckpt["teacher"]
+            elif "model" in ckpt:
+                state_dict = ckpt["model"]
+            elif "state_dict" in ckpt:
+                state_dict = ckpt["state_dict"]
+            else:
+                state_dict = ckpt
+
+            # Strip common key prefixes (e.g. "backbone.", "module.")
+            cleaned = {}
+            print("State dict: ", state_dict)
+            for k, v in state_dict.items():
+                for prefix in ("backbone.", "module.", "encoder."):
+                    if k.startswith(prefix):
+                        k = k[len(prefix):]
+                cleaned[k] = v
+
+            print("Cleaned state dict: ", cleaned)
+
+            msg = self.model.load_state_dict(cleaned, strict=False)
+            print(f"  RETFound-DINOv2 weights loaded: {len(cleaned)} keys, "
+                  f"missing={len(msg.missing_keys)}, unexpected={len(msg.unexpected_keys)}")
 
         # feature dim from the model (should be 1024 for ViT-Large)
         self._feature_dim = self.model.num_features
@@ -64,7 +88,7 @@ class RETFoundDINOv2(BaseClassifier):
     def preprocessing_config(self) -> PreprocessingConfig:
         """Declare input size and normalisation for ViT-Large/14."""
         return PreprocessingConfig(
-            input_size=224,
+            input_size=518,  # matches checkpoint positional embedding (518×518)
             mean=IMAGENET_NORM["mean"],
             std=IMAGENET_NORM["std"],
             crop_strategy="pad_to_square",  # review: was "center" which isn't a valid strategy in transforms.py

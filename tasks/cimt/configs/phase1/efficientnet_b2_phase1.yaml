@@ -45,7 +45,7 @@ phase1_batch_size: 64
 # Starting unweighted. See loss.py header for rationale.
 # CIMT is 70.75% positive — AUROC is threshold-invariant so
 # weighting doesn't help ranking. Revisit if calibration matters.
-use_weighted_bce: false
+use_weighted_bce: true
 pos_weight: null
 
 # Metadata (disabled for image-only baseline)
