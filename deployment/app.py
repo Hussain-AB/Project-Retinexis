@@ -12,6 +12,13 @@ Team Assignments:
 
 
 """
+import sys
+import os
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
+
+
+
 
 import gradio as gr
 import numpy as np
@@ -28,6 +35,9 @@ from pathlib import Path
 # from src.models import create_model  # uncomment when deploying with full pipeline
 import cv2
 
+from huggingface_hub import hf_hub_download
+
+from src.models import create_model 
 
 # [MODELS] Model registry & inference
 # ──────────────────────────────────────────────
@@ -39,15 +49,15 @@ import cv2
 # Format: { "Display Name": {"architecture": str, "variant": str, "description": str} }
 TASK_MODELS = {
     "CVD Risk": {
-        "RETFound-DINOv2": {
-            "architecture": "retfound_dinov2",
+        "RETFound-MAE": {
+            "architecture": "retfound_mae",
             "variant": "default",
             "description": "Retinal specialist — top performer on CVD risk",
         },
-        "DINOv2-Large": {
-            "architecture": "dinov2",
-            "variant": "large",
-            "description": "General-purpose ViT — capacity-matched generalist",
+        "ConvNeXt V2-Base": {
+            "architecture": "convnextv2",
+            "variant": "base",
+            "description": "Modern CNN — second best on CVD risk",
         },
         "EfficientNet-B2": {
             "architecture": "efficientnet",
@@ -56,23 +66,40 @@ TASK_MODELS = {
         },
     },
     "Hypertension": {
-        "RETFound-DINOv2": {
-            "architecture": "retfound_dinov2",
+        "DINOv3-Large": {
+            "architecture": "dinov3",
             "variant": "default",
-            "description": "Retinal specialist — top performer on hypertension",
+            "description": "Latest generalist ViT — top performer on hypertension",
+        },
+        "RETFound-MAE": {
+            "architecture": "retfound_mae",
+            "variant": "default",
+            "description": "Retinal specialist — strong on hypertension",
         },
         "DINOv2-Large": {
             "architecture": "dinov2",
             "variant": "large",
             "description": "General-purpose ViT — capacity-matched generalist",
         },
-        "ConvNeXt V2-Base": {
-            "architecture": "convnextv2",
-            "variant": "base",
-            "description": "Modern CNN — BRSET literature baseline",
-        },
     },
 }
+
+HF_CHECKPOINTS = {
+    "CVD Risk": {
+        "RETFound-MAE": "cimt/retfound_mae/best.pt",
+        "ConvNeXt V2-Base": "cimt/convnextv2/best.pt",
+        "EfficientNet-B2": "cimt/efficientnet/best.pt",
+    },
+    "Hypertension": {
+        "DINOv3-Large": "hypertension_combined/dinov3/best.pt",
+        "RETFound-MAE": "hypertension_combined/retfound_mae/best.pt",
+        "DINOv2-Large": "hypertension_combined/dinov2/best.pt",
+    },
+}
+
+
+
+
 
 # TODO: Update with actual metadata fields per dataset.
 #   - CVD Risk (CIMT dataset): likely age, gender, thickness
@@ -99,51 +126,38 @@ def get_model_description(task: str, model_name: str) -> str:
 
 # [MODELS] Inference pipeline
 
-
 def load_model(task: str, model_name: str):
-    """
-    Load a trained model checkpoint.
-
-    TODO [Person 2]: Replace stub with actual model loading:
-        1. Look up architecture + variant from TASK_MODELS
-        2. Call create_model(architecture, variant=variant, pretrained=True)
-        3. Load the trained checkpoint weights
-        4. Set model to eval mode
-        5. Return (model, preprocessing_config)
-
-    Checkpoints should live in: outputs/{task}/{model_name}/fold_0/checkpoints/best.pt
-    (or whichever fold / ensemble strategy we decide on for deployment)
-    """
     try:
         from src.models import create_model
+        from huggingface_hub import hf_hub_download
     except ImportError:
         return None, None
 
+    # Check if checkpoint exists on HF
+    hf_path = HF_CHECKPOINTS.get(task, {}).get(model_name)
+    if hf_path is None:
+        return None, None
 
-    #look up the archectrure and variant from the TASK_MODELS dict
+    # Look up architecture and variant
     model_info = TASK_MODELS.get(task, {}).get(model_name, {})
     architecture = model_info.get("architecture")
     variant = model_info.get("variant")
 
-    #2. create model from the factory function
+    # Create model architecture
     if variant and variant != "default":
-        model = create_model(architecture, variant=variant, pretrained=True)
+        model = create_model(architecture, variant=variant, pretrained=False)
     else:
-        model = create_model(architecture, pretrained=True)
+        model = create_model(architecture, pretrained=False)
 
-    #3. load the trained checkpoint weights
-    # if model trained with meta data yiu need to load that to 
-    checkpoint_path = Path(f"outputs/{task}/{model_name}/fold_0/checkpoints/best.pt")
-    if checkpoint_path.exists():
-        checkpoint = torch.load(checkpoint_path, map_location="cpu")
-        model.load_state_dict(checkpoint["model_state_dict"])
-    else:
-        raise gr.Error(f"Checkpoint not found: {checkpoint_path}")
+    # Download and load trained weights from HF
+    checkpoint_path = hf_hub_download(
+        repo_id="Faisasa12/Project-Retinexis",
+        filename=hf_path,
+    )
+    checkpoint = torch.load(checkpoint_path, map_location="cpu")
+    model.load_state_dict(checkpoint["model_state_dict"])
 
-    #4. set model to eval mode
     model.eval()
-
-    #5. return model and preprocessing config
     return model, model.preprocessing_config
 
 
