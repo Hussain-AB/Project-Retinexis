@@ -56,7 +56,7 @@ TASK_MODELS = {
         },
         "ConvNeXt V2-Base": {
             "architecture": "convnextv2",
-            "variant": "base",
+            "variant": "convnextv2_base",
             "description": "Modern CNN — second best on CVD risk",
         },
         "EfficientNet-B2": {
@@ -68,7 +68,7 @@ TASK_MODELS = {
     "Hypertension": {
         "DINOv3-Large": {
             "architecture": "dinov3",
-            "variant": "default",
+            "variant": "large",
             "description": "Latest generalist ViT — top performer on hypertension",
         },
         "RETFound-MAE": {
@@ -154,7 +154,7 @@ def load_model(task: str, model_name: str):
         repo_id="Faisasa12/Project-Retinexis",
         filename=hf_path,
     )
-    checkpoint = torch.load(checkpoint_path, map_location="cpu")
+    checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
     model.load_state_dict(checkpoint["model_state_dict"])
 
     model.eval()
