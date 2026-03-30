@@ -431,8 +431,8 @@ def _architecture_type(task: str, model_name: str) -> str:
 
 
 _GRADCAM_TARGET_LAYER_MAP = {
-    "EfficientNet-B2": lambda m: [m.features[-1]],
-    "ConvNeXt V2-Base": lambda m: [m.stages[-1]],
+    "EfficientNet-B2": lambda m: [m._backbone.blocks[-1]],
+    "ConvNeXt V2-Base": lambda m: [m._backbone.stages[-1]],
 }
 
 
@@ -440,12 +440,13 @@ def _get_target_layers(model: nn.Module, model_name: str = "") -> list:
     """
     Return GradCAM target layer(s) for a CNN model.
     Uses an explicit per-model mapping first, then falls back to scanning
-    all modules for the last Conv2d in the network.
+    the backbone for the last Conv2d in the network.
     """
     if model_name in _GRADCAM_TARGET_LAYER_MAP:
         return _GRADCAM_TARGET_LAYER_MAP[model_name](model)
+    backbone = getattr(model, "_backbone", model)
     last_conv = None
-    for m in model.modules():
+    for m in backbone.modules():
         if isinstance(m, nn.Conv2d):
             last_conv = m
     if last_conv is None:
@@ -501,103 +502,87 @@ def _apply_gradcam(
 
     opacity = float(np.clip(opacity, 0.0, 1.0))
     orig_rgb = np.array(original_image.convert("RGB")).astype(np.float32) / 255.0
-    orig_resized = cv2.resize(orig_rgb, (grayscale_cam.shape[1], grayscale_cam.shape[0]))
-    overlay_arr = show_cam_on_image(orig_resized, grayscale_cam, use_rgb=True, image_weight=1 - opacity)
+    h, w = orig_rgb.shape[:2]
+    grayscale_resized = cv2.resize(grayscale_cam, (w, h))
+    overlay_arr = show_cam_on_image(orig_rgb, grayscale_resized, use_rgb=True, image_weight=1 - opacity)
 
     return Image.fromarray(overlay_arr), "GradCAM"
 
 
-def _apply_attention_rollout(
+def _apply_vit_gradcam(
     model: nn.Module,
     image_tensor,
     original_image: Image.Image,
+    architecture: str = "",
     opacity: float = 0.5,
-    discard_ratio: float = 0.1,  
 ) -> tuple[Image.Image, str]:
     """
-    Attention rollout for ViT models (e.g. RETFound-DINOv2, DINOv2-Large).
+    Apply GradCAM to ViT models (RETFound-MAE, DINOv2-Large, DINOv3-Large).
 
-    Registers forward hooks on nn.MultiheadAttention layers to collect attention
-    weights, folds them across all layers using the rollout algorithm, and uses
-    the CLS token's attention to each patch as the saliency map.
+    timm ViTs (RETFound-MAE) and torch.hub ViTs (DINOv2) use their own Attention
+    class rather than nn.MultiheadAttention, so attention-rollout hooks do not fire.
+    HuggingFace models (DINOv3) similarly use library-internal attention.
 
-    Note: works when the model uses nn.MultiheadAttention and returns weights in
-    output[1]. Models with fused or custom attention layers may need
-    architecture-specific rollout support and will raise a clear error.
+    GradCAM with a reshape_transform handles all three cases by computing
+    gradients w.r.t. the last transformer block's norm output and reshaping
+    the resulting token sequence into a 2-D spatial map.
 
     Returns (overlay PIL Image, method name string).
     """
-    attention_weights = []
-    hooks = []
+    from pytorch_grad_cam import GradCAM
+    from pytorch_grad_cam.utils.image import show_cam_on_image
+    from pytorch_grad_cam.utils.model_targets import ClassifierOutputTarget
 
-    def _hook(module, input, output):
-        # nn.MultiheadAttention returns (attn_output, attn_weights)
-        if isinstance(output, tuple) and len(output) >= 2 and output[1] is not None:
-            attention_weights.append(output[1].detach().cpu())
-
-    for module in model.modules():
-        if isinstance(module, nn.MultiheadAttention):
-            hooks.append(module.register_forward_hook(_hook))
-
+    backbone = getattr(model, "_backbone", model)
     device = next(model.parameters()).device
     tensor = _to_batched_tensor(image_tensor).to(device)
 
+    # Select the target layer — the pre-attention norm of the last transformer block.
+    # This ensures gradients flow from the CLS output back through the block's
+    # attention mechanism to reach patch token positions (non-zero saliency).
+    # Using a post-encoder norm (e.g. backbone.layernorm) produces zero gradients
+    # at patch positions because the CLS slice cuts the gradient path.
+    #
+    # timm ViTs (RETFound-MAE, DINOv2 via torch.hub):  backbone.blocks[-1].norm1
+    # HuggingFace DINOv3 (Dinov2Model):                 backbone.encoder.layer[-1].norm1
+    if architecture in ("retfound_mae", "dinov2"):
+        target_layers = [backbone.blocks[-1].norm1]
+    elif architecture == "dinov3":
+        target_layers = [backbone.encoder.layer[-1].norm1]
+    else:
+        # Generic fallback: last block if blocks exist, else final norm
+        if hasattr(backbone, "blocks"):
+            target_layers = [backbone.blocks[-1]]
+        elif hasattr(backbone, "norm"):
+            target_layers = [backbone.norm]
+        else:
+            raise gr.Error(f"No ViT GradCAM target layer found for architecture: {architecture}")
+
+    def reshape_transform(tensor):
+        """
+        Convert token sequence (B, N_tokens, C) → spatial map (B, C, h, w).
+        Handles HuggingFace layers that return tuples by taking element [0].
+        Removes the CLS token when the remaining count is a perfect square.
+        """
+        if isinstance(tensor, (tuple, list)):
+            tensor = tensor[0]
+        n = tensor.size(1)
+        # Remove CLS if (n-1) is a perfect square
+        if int((n - 1) ** 0.5) ** 2 == (n - 1):
+            tensor = tensor[:, 1:]
+        h = w = int(tensor.size(1) ** 0.5)
+        result = tensor.reshape(tensor.size(0), h, w, tensor.size(-1))
+        return result.permute(0, 3, 1, 2)
+
     model.eval()
-    try:
-        with torch.no_grad():
-            model(tensor)
-    finally:
-        for hook in hooks:
-            hook.remove()
+    with GradCAM(model=model, target_layers=target_layers, reshape_transform=reshape_transform) as cam:
+        grayscale_cam = cam(input_tensor=tensor, targets=[ClassifierOutputTarget(0)])[0]
 
-    if not attention_weights:
-        raise gr.Error(
-            "Could not extract attention weights from this model. "
-            "The architecture may need custom attention rollout support."
-        )
-
-    # Rollout: fold all attention layers together
-    seq_len = attention_weights[0].shape[-1]
-    result = torch.eye(seq_len, dtype=attention_weights[0].dtype, device=attention_weights[0].device)
-    for attn in attention_weights:
-        attn_mat = attn[0].clone()
-
-        # Handle (heads, seq, seq) or (seq, seq) — average over heads if needed
-        if attn_mat.dim() == 3:
-            attn_mat = attn_mat.mean(dim=0)   # (seq, seq)
-        elif attn_mat.dim() != 2:
-            raise gr.Error(f"Unexpected attention weight shape: {tuple(attn.shape)}")
-
-        if discard_ratio > 0:
-            k = max(1, int(discard_ratio * attn_mat.numel()))
-            threshold = attn_mat.flatten().kthvalue(k).values
-            attn_mat[attn_mat < threshold] = 0
-        attn_mat = attn_mat + torch.eye(attn_mat.shape[0], dtype=attn_mat.dtype, device=attn_mat.device)
-        attn_mat = attn_mat / attn_mat.sum(dim=-1, keepdim=True)
-        result = torch.mm(attn_mat, result)
-
-    # CLS token (row 0) attention to patch tokens (cols 1:)
-    mask = result[0, 1:].cpu().numpy()
-
-    grid = int(len(mask) ** 0.5)
-    if grid * grid != len(mask):
-        raise gr.Error(
-            f"Cannot reshape {len(mask)} patch tokens into a square grid. "
-            "The model may use a non-square patch layout."
-        )
-    mask = mask.reshape(grid, grid)
-    mask = (mask - mask.min()) / (mask.max() - mask.min() + 1e-8)
-
-    orig_rgb = np.array(original_image.convert("RGB"))
+    orig_rgb = np.array(original_image.convert("RGB")).astype(np.float32) / 255.0
     h, w = orig_rgb.shape[:2]
-    mask_resized = cv2.resize(mask, (w, h))
-
-    opacity = float(np.clip(opacity, 0.0, 1.0))
-    heatmap = cv2.applyColorMap(np.uint8(255 * mask_resized), cv2.COLORMAP_JET)
-    heatmap_rgb = cv2.cvtColor(heatmap, cv2.COLOR_BGR2RGB)
-    overlay_arr = cv2.addWeighted(orig_rgb, 1 - opacity, heatmap_rgb, opacity, 0)
-
-    return Image.fromarray(overlay_arr), "Attention Rollout"
+    grayscale_resized = cv2.resize(grayscale_cam, (w, h))
+    overlay_arr = show_cam_on_image(orig_rgb, grayscale_resized, use_rgb=True, image_weight=1 - opacity)
+    return Image.fromarray(overlay_arr), "GradCAM"
 
 
 def generate_saliency_and_store(image, task, model_name):
@@ -648,10 +633,11 @@ def generate_saliency_map(image, task, model_name):
         return image, info
 
     arch_type = _architecture_type(task, model_name)
+    architecture = TASK_MODELS.get(task, {}).get(model_name, {}).get("architecture", "")
     image_tensor = preprocess_image(np.array(image), preprocessing_config)
 
     if arch_type == "vit":
-        overlay, method = _apply_attention_rollout(model, image_tensor, image)
+        overlay, method = _apply_vit_gradcam(model, image_tensor, image, architecture=architecture)
     else:
         overlay, method = _apply_gradcam(model, image_tensor, image, model_name=model_name)
 
@@ -1231,14 +1217,27 @@ def _summary_to_card(summary, task, model_name):
         return f"<div style='padding:1rem'>{summary}</div>"
  
  
+def _extract_confidence(summary: str) -> float:
+    """Return confidence as a float (0–1), or -1 if not parseable."""
+    import re
+    try:
+        return float(re.search(r"Confidence:\*\* ([\d.]+)%", summary).group(1)) / 100
+    except Exception:
+        return -1.0
+
+
 def dual_predict_and_log_html(image_left, image_right, task, model_name, age, sex, history):
-    """Intercepts dual_predict_and_log and replaces summaries with HTML cards."""
+    """Intercepts dual_predict_and_log and returns the highest-confidence eye as the combined card."""
     left_summary, right_summary, combined_summary, updated, gallery, history_md = dual_predict_and_log(
         image_left, image_right, task, model_name, age, sex, history
     )
-    left_card     = _summary_to_card(left_summary,  task, model_name)
-    right_card    = _summary_to_card(right_summary, task, model_name)
-    combined_card = f"<div>{left_card}</div><hr style='margin:1rem 0;border:none;border-top:1px solid #e5e7eb'><div>{right_card}</div>"
+    left_card  = _summary_to_card(left_summary,  task, model_name)
+    right_card = _summary_to_card(right_summary, task, model_name)
+
+    left_conf  = _extract_confidence(left_summary)
+    right_conf = _extract_confidence(right_summary)
+    combined_card = right_card if right_conf > left_conf else left_card
+
     return left_card, right_card, combined_card, updated, gallery, history_md
  
  
@@ -1365,10 +1364,9 @@ def build_prediction_subtabs(task: str, session_history: gr.State) -> dict:
                     dual_sex = gr.Dropdown(choices=[("Female", 0), ("Male", 1)], label="Sex", type="index")
                 dual_btn = gr.Button("Analyse both eyes", variant="primary", elem_classes=btn_class)
  
-            with gr.Row():
-                dual_left_out  = gr.HTML(value="<div style='color:#9ca3af;font-size:0.82rem;padding:1rem'>Left eye result will appear here.</div>")
-                dual_right_out = gr.HTML(value="<div style='color:#9ca3af;font-size:0.82rem;padding:1rem'>Right eye result will appear here.</div>")
-            dual_combined = gr.HTML(visible= False)
+            dual_left_out  = gr.HTML(visible=False)
+            dual_right_out = gr.HTML(visible=False)
+            dual_combined  = gr.HTML(value="<div style='color:#9ca3af;font-size:0.82rem;padding:1rem'>Combined analysis will appear here.</div>")
  
         # Tab 4: Generate a Saliency Map
         with gr.Tab("Saliency map"):
@@ -1534,5 +1532,5 @@ if __name__ == "__main__":
     app.launch(
         server_name="0.0.0.0",
         server_port=7860,
-        share=False,
+        share=True,
     )
