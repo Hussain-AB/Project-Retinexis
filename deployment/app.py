@@ -155,8 +155,16 @@ def load_model(task: str, model_name: str):
         filename=hf_path,
     )
     checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
-    model.load_state_dict(checkpoint["model_state_dict"])
-
+    state_dict = checkpoint["model_state_dict"]
+    
+    # Remove keys with shape mismatches (e.g. DINOv3 mask_token)
+    model_state = model.state_dict()
+    for key in list(state_dict.keys()):
+        if key in model_state and state_dict[key].shape != model_state[key].shape:
+            del state_dict[key]
+    
+    model.load_state_dict(state_dict, strict=False)
+    
     model.eval()
     return model, model.preprocessing_config
 
