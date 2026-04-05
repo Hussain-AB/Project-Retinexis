@@ -94,6 +94,7 @@ class TrainConfig:
     # Critical for Ibex where SLURM jobs may be killed before completion.
     # The job template auto-detects last.pt and passes this flag.
     checkpoint_path: str | None = None
+    resume_weights_only: bool = False
     skip_phase1: bool = False
 
     # Augmentation
