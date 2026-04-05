@@ -48,6 +48,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--checkpoint_path", type=str, default=None, help="Resume from checkpoint")
     parser.add_argument("--phase1_only", action="store_true", help="Run Phase 1 only (sets phase2_epochs=0)")
     parser.add_argument("--skip_phase1", action="store_true", help="Skip Phase 1, go straight to Phase 2")
+    parser.add_argument("--resume_weights_only", action="store_true", help="Only load model weights from checkpoint")
     parser.add_argument("--output_dir", type=str, default=None, help="Override output directory")
 
     # Arbitrary overrides: --override key value [key value ...]
@@ -72,6 +73,8 @@ def build_overrides(args: argparse.Namespace) -> dict:
         overrides["phase2_epochs"] = 0
     if args.skip_phase1:
         overrides["skip_phase1"] = True
+    if args.resume_weights_only:
+        overrides["resume_weights_only"] = True
     if args.output_dir is not None:
         overrides["output_dir"] = args.output_dir
 
