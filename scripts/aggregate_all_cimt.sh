@@ -31,12 +31,17 @@ import sys, pathlib, numpy as np, pandas as pd
 cimt_dir = pathlib.Path(sys.argv[1])
 output_csv = pathlib.Path(sys.argv[2])
 
-METRICS = ["auroc", "auprc", "ece", "f1", "sensitivity", "specificity"]
+METRICS = ["auroc", "auprc", "ece", "f1", "sensitivity", "specificity", "harmonic_mean"]
 rows = []
 
 for csv_path in sorted(cimt_dir.glob("*/cv_summary.csv")):
     model = csv_path.parent.name
     df = pd.read_csv(csv_path)
+    
+    if "sensitivity" in df.columns and "specificity" in df.columns:
+        denom = df["sensitivity"] + df["specificity"]
+        df["harmonic_mean"] = np.where(denom > 0, 2 * (df["sensitivity"] * df["specificity"]) / denom, np.nan)
+        
     row = {"model": model, "n_folds": len(df)}
     for m in METRICS:
         if m in df.columns:
