@@ -38,6 +38,7 @@ PyYAML
 
 # Testing
 pytest
+pytest-cov
 
 # Notebook
 jupyter

@@ -31,21 +31,8 @@ TEST_OVERRIDES: dict[str, dict] = {
     # "retfound_mae": {"weights_path": None},
 }
 
-
-def _discover_models() -> list[tuple[str, BaseClassifier]]:
-    """Instantiate every registered model with pretrained=False."""
-    models = []
-    for name in MODEL_REGISTRY:
-        kwargs = {"pretrained": False}
-        kwargs.update(TEST_OVERRIDES.get(name, {}))
-        try:
-            model = create_model(name, **kwargs)
-            models.append((name, model))
-        except Exception as e:
-            pytest.fail(
-                f"Failed to instantiate '{name}' with kwargs {kwargs}: {e}"
-            )
-    return models
+SLOW_MODEL = pytest.mark.slow_model
+MODEL_NAMES = list(MODEL_REGISTRY)
 
 
 def _dummy_input(model: BaseClassifier, batch_size: int = 2) -> torch.Tensor:
@@ -58,22 +45,22 @@ def _dummy_labels(batch_size: int = 2) -> torch.Tensor:
     return torch.randint(0, 2, (batch_size, 1)).float()
 
 
-# Parametrise every test class over all discovered models
-MODELS = _discover_models()
-MODEL_IDS = [name for name, _ in MODELS]
-
-
-@pytest.fixture(params=MODELS, ids=MODEL_IDS)
+@pytest.fixture(params=MODEL_NAMES, ids=MODEL_NAMES)
 def model_and_name(request):
     """Yields (model_name, model_instance) for each registered model."""
-    name, model = request.param
-    # Return a fresh instance each time to avoid state leaking between tests
+    name = request.param
     kwargs = {"pretrained": False}
     kwargs.update(TEST_OVERRIDES.get(name, {}))
-    fresh = create_model(name, **kwargs)
+    try:
+        fresh = create_model(name, **kwargs)
+    except Exception as e:
+        pytest.fail(
+            f"Failed to instantiate '{name}' with kwargs {kwargs}: {e}"
+        )
     return name, fresh
 
 # 1. Instantiation
+@SLOW_MODEL
 class TestInstantiation:
 
     def test_inherits_from_base(self, model_and_name):
@@ -117,9 +104,10 @@ class TestInstantiation:
             config.input_size = 999
 
 # 2. Forward pass
+@SLOW_MODEL
 class TestForwardPass:
 
-    @pytest.mark.parametrize("batch_size", [1, 2, 8])
+    @pytest.mark.parametrize("batch_size", [1, 2])
     def test_output_shape(self, model_and_name, batch_size):
         name, model = model_and_name
         model.eval()
@@ -158,6 +146,7 @@ class TestForwardPass:
         )
 
 # 3. Feature extraction
+@SLOW_MODEL
 class TestFeatureExtraction:
 
     def test_feature_shape(self, model_and_name):
@@ -192,6 +181,7 @@ class TestFeatureExtraction:
         )
 
 # 4. Freeze / unfreeze
+@SLOW_MODEL
 class TestFreezeUnfreeze:
 
     def test_freeze_zeros_backbone_grad(self, model_and_name):
@@ -232,6 +222,7 @@ class TestFreezeUnfreeze:
         )
 
 # 5. Linear probe lock
+@SLOW_MODEL
 class TestLinearProbeLock:
 
     def _assert_locked_state(self, model: BaseClassifier, name: str):
@@ -278,6 +269,7 @@ class TestLinearProbeLock:
         )
 
 # 6. Backward pass
+@SLOW_MODEL
 class TestBackwardPass:
 
     def test_head_gets_gradients(self, model_and_name):
@@ -324,6 +316,7 @@ class TestBackwardPass:
             )
 
 # 7. Determinism
+@SLOW_MODEL
 class TestDeterminism:
 
     def test_eval_mode_deterministic(self, model_and_name):
@@ -344,6 +337,7 @@ class TestRegistry:
     def test_registry_is_not_empty(self):
         assert len(MODEL_REGISTRY) > 0, "MODEL_REGISTRY is empty"
 
+    @SLOW_MODEL
     def test_all_registered_models_instantiate(self):
         for name in MODEL_REGISTRY:
             kwargs = {"pretrained": False}

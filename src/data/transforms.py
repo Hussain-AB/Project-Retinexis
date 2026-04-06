@@ -38,13 +38,22 @@ Usage:
 from __future__ import annotations
 
 import random
+from importlib import import_module
+from typing import TYPE_CHECKING
 
 import torch
-import torchvision.transforms as T
-import torchvision.transforms.functional as TF
 from PIL import Image, ImageFilter
 
 from src.models.base import PreprocessingConfig
+
+if TYPE_CHECKING:
+    import torchvision.transforms as T
+
+
+def _torchvision_modules() -> tuple[object, object]:
+    transforms = import_module("torchvision.transforms")
+    functional = import_module("torchvision.transforms.functional")
+    return transforms, functional
 
 
 # Crop strategies
@@ -108,13 +117,14 @@ class RandomScale:
 
     def __call__(self, img: Image.Image) -> Image.Image:
         scale = random.uniform(self.scale_min, self.scale_max)
-        return TF.affine(
+        transforms, functional = _torchvision_modules()
+        return functional.affine(
             img,
             angle=0,
             translate=[0, 0],
             scale=scale,
             shear=[0, 0],
-            interpolation=T.InterpolationMode.BILINEAR,
+            interpolation=transforms.InterpolationMode.BILINEAR,
             fill=0,
         )
 
@@ -135,13 +145,14 @@ class RandomBlur:
         self.p = p
 
     def __call__(self, img: Image.Image) -> Image.Image:
+        _, functional = _torchvision_modules()
         if random.random() > self.p:
             return img
 
         if random.random() < 0.5:
             # Gaussian blur
             kernel_size = self.blur_limit if self.blur_limit % 2 == 1 else self.blur_limit + 1
-            return TF.gaussian_blur(img, kernel_size=[kernel_size, kernel_size])
+            return functional.gaussian_blur(img, kernel_size=[kernel_size, kernel_size])
         else:
             # Motion blur approximation via PIL directional filter
             radius = max(1, self.blur_limit // 2)
@@ -171,38 +182,39 @@ def build_transforms(
     std = preprocessing_config.std
     crop_strategy = preprocessing_config.crop_strategy
 
-    transforms = []
+    transforms_module, _ = _torchvision_modules()
+    transform_steps = []
 
     # Make square (if needed)
     if crop_strategy in _CROP_STRATEGIES and _CROP_STRATEGIES[crop_strategy] is not None:
-        transforms.append(_CROP_STRATEGIES[crop_strategy]())
+        transform_steps.append(_CROP_STRATEGIES[crop_strategy]())
 
     # Resize to model's expected input size
-    transforms.append(T.Resize(
+    transform_steps.append(transforms_module.Resize(
         (input_size, input_size),
-        interpolation=T.InterpolationMode.BICUBIC,
+        interpolation=transforms_module.InterpolationMode.BICUBIC,
     ))
 
     # Augmentation (PIL-based, before ToTensor)
     if is_train:
-        transforms.extend(_build_augmentation(config))
+        transform_steps.extend(_build_augmentation(config))
 
     # Convert to tensor + normalise
-    transforms.append(T.ToTensor())
-    transforms.append(T.Normalize(mean=mean, std=std))
+    transform_steps.append(transforms_module.ToTensor())
+    transform_steps.append(transforms_module.Normalize(mean=mean, std=std))
 
     # Random erasing (tensor-based, must be after ToTensor)
     if is_train:
         erasing_prob = getattr(config, "aug_random_erasing", 0.0)
         if erasing_prob > 0:
-            transforms.append(T.RandomErasing(
+            transform_steps.append(transforms_module.RandomErasing(
                 p=erasing_prob,
                 scale=(0.02, 0.15),
                 ratio=(0.3, 3.3),
                 value=0,
             ))
 
-    return T.Compose(transforms)
+    return transforms_module.Compose(transform_steps)
 
 
 def _build_augmentation(config: object | None) -> list:
@@ -217,20 +229,21 @@ def _build_augmentation(config: object | None) -> list:
 
     All parameters come from config YAML. Defaults match the notebook.
     """
+    transforms_module, _ = _torchvision_modules()
     augs = []
 
     # Horizontal flip (p=0.5)
     # Safe for image-only mode. If eye laterality is later added as
     # metadata, either disable or flip the laterality label too.
     if getattr(config, "aug_hflip", True):
-        augs.append(T.RandomHorizontalFlip(p=0.5))
+        augs.append(transforms_module.RandomHorizontalFlip(p=0.5))
 
     # Rotation (±10° default, black fill matches fundus background)
     rotation = getattr(config, "aug_rotation", 10.0)
     if rotation > 0:
-        augs.append(T.RandomRotation(
+        augs.append(transforms_module.RandomRotation(
             degrees=rotation,
-            interpolation=T.InterpolationMode.BILINEAR,
+            interpolation=transforms_module.InterpolationMode.BILINEAR,
             fill=0,
         ))
 
@@ -250,7 +263,7 @@ def _build_augmentation(config: object | None) -> list:
     saturation = getattr(config, "aug_saturation", 0.0)
     hue = getattr(config, "aug_hue", 0.0)
     if any(v > 0 for v in [brightness, contrast, saturation, hue]):
-        augs.append(T.ColorJitter(
+        augs.append(transforms_module.ColorJitter(
             brightness=brightness,
             contrast=contrast,
             saturation=saturation,
