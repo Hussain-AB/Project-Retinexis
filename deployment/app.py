@@ -224,6 +224,15 @@ def _clahe_cimt(img):
     g_enhanced = clahe.apply(g)
     return cv2.merge((r, g_enhanced, b))
 
+def _clahe_htn(img_bgr):
+    """Hypertension: CLAHE on L channel in LAB color space (matches training)."""
+    lab = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2LAB)
+    l, a, b = cv2.split(lab)
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    l_enhanced = clahe.apply(l)
+    lab_enhanced = cv2.merge((l_enhanced, a, b))
+    return cv2.cvtColor(lab_enhanced, cv2.COLOR_LAB2BGR)
+
 # Multimodal helpers (for models that fuse image features + patient metadata)
 
 class MetadataEncoder:
@@ -296,7 +305,12 @@ def preprocess_image(image: np.ndarray, preprocessing_config, task=None) -> torc
     if task == "CVD Risk":
         image = _remove_top_left_overlay_cimt(image)
         image = _clahe_cimt(image)
-
+    elif task == "Hypertension":
+        # Hypertension training used CLAHE on L channel in LAB color space
+        image_bgr = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
+        image_bgr = _clahe_htn(image_bgr)
+        image = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
+        
     input_size = preprocessing_config.input_size
     mean = preprocessing_config.mean
     std = preprocessing_config.std
@@ -777,13 +791,57 @@ def _extract_confidence(summary):
         return -1.0
 
 
+def _extract_prediction(summary):
+    """Extract whether a summary contains a Positive or Negative prediction."""
+    if "Positive" in summary:
+        return "Positive"
+    if "Negative" in summary:
+        return "Negative"
+    return None
+
+
 def dual_predict_and_log_html(image_left, image_right, task, model_name, age, sex, history):
     left_summary, right_summary, combined, updated, gallery, history_md = dual_predict_and_log(image_left, image_right, task, model_name, age, sex, history)
     left_card = _summary_to_card(left_summary, task, model_name)
     right_card = _summary_to_card(right_summary, task, model_name)
-    combined_card = right_card if _extract_confidence(right_summary) > _extract_confidence(left_summary) else left_card
-    return left_card, right_card, combined_card, updated, gallery, history_md
 
+    # Combined logic: clinical sensitivity rule — if either eye is positive, the patient is flagged positive
+    left_pred = _extract_prediction(left_summary)
+    right_pred = _extract_prediction(right_summary)
+    task_label = "Cardiovascular risk" if task == "CVD Risk" else "Hypertension"
+
+    if left_pred is None and right_pred is None:
+        combined_card = "<div style='color:#9ca3af;font-size:0.82rem;padding:1rem'>No valid predictions available.</div>"
+    elif left_pred == "Positive" or right_pred == "Positive":
+        # At least one eye flagged positive → patient is positive
+        if left_pred == "Positive" and right_pred == "Positive":
+            agreement_text = "Both eyes positive"
+        elif left_pred == "Positive":
+            agreement_text = "Left eye positive — right eye negative"
+        else:
+            agreement_text = "Right eye positive — left eye negative"
+        combined_card = f"""
+<div class="result-card{' htn' if task != 'CVD Risk' else ''}">
+  <div class="result-header"><span class="result-title">{task_label} — Combined (both eyes)</span><span class="result-badge badge-positive">Positive</span></div>
+  <div style="font-size:0.8rem;color:#6b7280;margin-top:8px;line-height:1.5">
+    <strong>Clinical rule:</strong> If either eye shows a positive finding, the patient is flagged positive to maximise sensitivity.
+    <br><strong>Agreement:</strong> {agreement_text}
+  </div>
+  <div class="disclaimer" style="margin-top:10px">Research tool only — not for clinical diagnosis. Physician review required before any clinical decision.</div>
+</div>"""
+    else:
+        # Both eyes negative
+        combined_card = f"""
+<div class="result-card{' htn' if task != 'CVD Risk' else ''}">
+  <div class="result-header"><span class="result-title">{task_label} — Combined (both eyes)</span><span class="result-badge badge-negative">Negative</span></div>
+  <div style="font-size:0.8rem;color:#6b7280;margin-top:8px;line-height:1.5">
+    <strong>Clinical rule:</strong> If either eye shows a positive finding, the patient is flagged positive to maximise sensitivity.
+    <br><strong>Agreement:</strong> Both eyes negative
+  </div>
+  <div class="disclaimer" style="margin-top:10px">Research tool only — not for clinical diagnosis. Physician review required before any clinical decision.</div>
+</div>"""
+
+    return left_card, right_card, combined_card, updated, gallery, history_md
 
 # ── Gradio UI ───────────────────────────────────────────────────────────────
 
