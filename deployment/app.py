@@ -224,6 +224,41 @@ def _clahe_cimt(img):
     g_enhanced = clahe.apply(g)
     return cv2.merge((r, g_enhanced, b))
 
+def _resize_aspect_preserve_htn(img, target_size=512):
+    """Hypertension: resize to target_size preserving aspect ratio, then center crop/pad to square."""
+    h, w = img.shape[:2]
+    # Scale so shorter side == target_size
+    if h < w:
+        new_h = target_size
+        new_w = int(w * target_size / h)
+    else:
+        new_w = target_size
+        new_h = int(h * target_size / w)
+    img = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+
+    # Center crop to target_size × target_size
+    h, w = img.shape[:2]
+    if h > target_size:
+        top = (h - target_size) // 2
+        img = img[top:top + target_size, :, :]
+    if w > target_size:
+        left = (w - target_size) // 2
+        img = img[:, left:left + target_size, :]
+
+    # Pad if needed (rare — only if image was smaller than target_size on one side)
+    h, w = img.shape[:2]
+    if h < target_size or w < target_size:
+        pad_h = target_size - h
+        pad_w = target_size - w
+        img = cv2.copyMakeBorder(
+            img,
+            pad_h // 2, pad_h - pad_h // 2,
+            pad_w // 2, pad_w - pad_w // 2,
+            cv2.BORDER_CONSTANT, value=[0, 0, 0]
+        )
+    return img
+
+
 def _clahe_htn(img_bgr):
     """Hypertension: CLAHE on L channel in LAB color space (matches training)."""
     lab = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2LAB)
@@ -294,8 +329,6 @@ def _build_metadata_head_from_state(state_dict):
 
 
 
-
-
 def preprocess_image(image: np.ndarray, preprocessing_config, task=None) -> torch.Tensor:
     """Preprocess uploaded image according to model's preprocessing_config."""
     if preprocessing_config is None:
@@ -307,10 +340,11 @@ def preprocess_image(image: np.ndarray, preprocessing_config, task=None) -> torc
         image = _clahe_cimt(image)
     elif task == "Hypertension":
         # Hypertension training used CLAHE on L channel in LAB color space
+        image = _resize_aspect_preserve_htn(image, target_size=512)
         image_bgr = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
         image_bgr = _clahe_htn(image_bgr)
         image = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
-        
+
     input_size = preprocessing_config.input_size
     mean = preprocessing_config.mean
     std = preprocessing_config.std
