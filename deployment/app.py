@@ -142,10 +142,43 @@ def load_model(task: str, model_name: str):
     return model, model.preprocessing_config
 
 
-def preprocess_image(image: np.ndarray, preprocessing_config) -> torch.Tensor:
+# Task-specific preprocessing helpers 
+
+def _remove_top_left_overlay_cimt(img, width=90, height=50, white_threshold=200):
+    """CIMT: Remove text overlay from top-left corner (matches training)."""
+    img_copy = img.copy()
+    top_left = img_copy[:height, :width]
+    if len(top_left.shape) == 3:
+        gray = cv2.cvtColor(top_left, cv2.COLOR_RGB2GRAY)
+    else:
+        gray = top_left
+    if np.sum(gray > white_threshold) > 0:
+        img_copy[:height, :width] = np.array([6, 6, 6], dtype=img_copy.dtype)
+    return img_copy
+
+
+def _clahe_cimt(img):
+    """CIMT: CLAHE on green channel only (matches training)."""
+    r, g, b = cv2.split(img)
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    g_enhanced = clahe.apply(g)
+    return cv2.merge((r, g_enhanced, b))
+
+
+
+
+
+
+
+def preprocess_image(image: np.ndarray, preprocessing_config, task=None) -> torch.Tensor:
     """Preprocess uploaded image according to model's preprocessing_config."""
     if preprocessing_config is None:
         return image
+
+    # Apply task-specific preprocessing (matches training pipeline)
+    if task == "CVD Risk":
+        image = _remove_top_left_overlay_cimt(image)
+        image = _clahe_cimt(image)
 
     input_size = preprocessing_config.input_size
     mean = preprocessing_config.mean
@@ -198,7 +231,7 @@ def predict(image, task, model_name, age, sex):
         metadata["sex"] = int(sex)
 
     model, preprocessing_config = load_model(task, model_name)
-    image_tensor = preprocess_image(np.array(image), preprocessing_config)
+    image_tensor = preprocess_image(np.array(image), preprocessing_config, task=task)
     result = run_inference(model, image_tensor, metadata)
 
     prob = result["probability"]
@@ -382,7 +415,7 @@ def generate_saliency_map(image, task, model_name):
 
     arch_type = _architecture_type(task, model_name)
     architecture = TASK_MODELS.get(task, {}).get(model_name, {}).get("architecture", "")
-    image_tensor = preprocess_image(np.array(image), preprocessing_config)
+    image_tensor = preprocess_image(np.array(image), preprocessing_config, task=task)
 
     if arch_type == "vit":
         overlay, method = _apply_vit_gradcam(model, image_tensor, image, architecture=architecture)
@@ -421,7 +454,7 @@ def compare_models(image, task, age, sex):
             if model is None:
                 error_rows.append((name, "Model not yet loaded"))
                 continue
-            image_tensor = preprocess_image(img_array, preprocessing_config)
+            image_tensor = preprocess_image(img_array, preprocessing_config, task=task)
             result = run_inference(model, image_tensor, metadata)
             rows.append((name, _architecture_type(task, name).upper(), "Positive" if result["prediction"] == 1 else "Negative", result["probability"], result["confidence"]))
         except gr.Error:
