@@ -504,6 +504,10 @@ class Trainer:
         if "metadata_encoder" in checkpoint and self.metadata_encoder is not None:
             self.metadata_encoder = MetadataEncoder.from_dict(checkpoint["metadata_encoder"])
 
+        if self.config.resume_weights_only:
+            print("  Note: resume_weights_only=True. Ignoring optimizer and epoch state.")
+            return
+
         self.start_epoch = checkpoint["epoch"] + 1
         self.start_phase = checkpoint["phase"]
         self.best_val_auroc = checkpoint.get("best_val_auroc", 0.0)

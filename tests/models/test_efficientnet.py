@@ -19,6 +19,8 @@ from src.models.base import BaseClassifier, PreprocessingConfig, IMAGENET_NORM
 from src.models.efficientnet import EfficientNetClassifier, VARIANT_CONFIG
 from src.models import create_model, MODEL_REGISTRY, BaseClassifier, PreprocessingConfig
 
+pytestmark = pytest.mark.slow_model
+
 
 # helpers
 INPUT_SIZES = {
