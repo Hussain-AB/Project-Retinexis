@@ -16,6 +16,7 @@ Pillow
 albumentations
 opencv-python
 einops
+scikit-image
 
 # Datasets
 datasets

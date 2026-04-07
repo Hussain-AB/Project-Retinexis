@@ -45,7 +45,7 @@ def seed_everything(seed: int = 42, deterministic: bool = True) -> None:
         # Required for some CUDA ops to be deterministic
         os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
         try:
-            torch.use_deterministic_algorithms(True)
+            torch.use_deterministic_algorithms(True, warn_only=True)
         except AttributeError:
             pass
     else:
@@ -77,6 +77,18 @@ def set_rng_states(states: dict) -> None:
     """
     random.setstate(states["python"])
     np.random.set_state(states["numpy"])
-    torch.random.set_rng_state(states["torch"])
+    
+    t_state = states["torch"]
+    if not isinstance(t_state, torch.Tensor):
+        t_state = torch.ByteTensor(t_state)
+    torch.random.set_rng_state(t_state.cpu())
+    
     if "cuda" in states and torch.cuda.is_available():
-        torch.cuda.set_rng_state_all(states["cuda"])
+        c_states = states["cuda"]
+        if isinstance(c_states, (list, tuple)):
+            c_states = [
+                torch.ByteTensor(s).cpu() if not isinstance(s, torch.Tensor) else s.cpu()
+                for s in c_states
+            ]
+        torch.cuda.set_rng_state_all(c_states)
+

@@ -161,6 +161,45 @@ class RandomBlur:
 
 # Pipeline builder
 
+def build_vessel_transforms(preprocessing_config: PreprocessingConfig) -> "T.Compose":
+    """Build a deterministic transform pipeline for RRWNet vessel masks.
+
+    No augmentation — vessel masks are applied as fixed anatomical context.
+    Spatial ops only: pad to square, resize to model input size.
+
+    Normalisation uses mean=0.5, std=0.5 to map RRWNet's sigmoid outputs
+    [0, 1] to [-1, 1], which is better conditioned for EfficientNet's
+    batch norm layers than raw [0, 1].
+
+    Args:
+        preprocessing_config: Typically model.vessel_preprocessing_config,
+            which declares the same input_size as the image branch but
+            with (0.5, 0.5, 0.5) mean/std.
+
+    Returns:
+        A Compose pipeline: PIL Image → Tensor (3, H, W), normalised to [-1, 1].
+    """
+    input_size = preprocessing_config.input_size
+    mean = preprocessing_config.mean
+    std = preprocessing_config.std
+    crop_strategy = preprocessing_config.crop_strategy
+
+    transforms_module, _ = _torchvision_modules()
+    steps = []
+
+    if crop_strategy in _CROP_STRATEGIES and _CROP_STRATEGIES[crop_strategy] is not None:
+        steps.append(_CROP_STRATEGIES[crop_strategy]())
+
+    steps.append(transforms_module.Resize(
+        (input_size, input_size),
+        interpolation=transforms_module.InterpolationMode.BICUBIC,
+    ))
+    steps.append(transforms_module.ToTensor())
+    steps.append(transforms_module.Normalize(mean=mean, std=std))
+
+    return transforms_module.Compose(steps)
+
+
 def build_transforms(
     preprocessing_config: PreprocessingConfig,
     is_train: bool = False,

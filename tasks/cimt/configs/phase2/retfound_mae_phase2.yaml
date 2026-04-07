@@ -51,9 +51,9 @@ use_weighted_bce: true
 pos_weight: null
 
 # Metadata
-use_metadata: false
-metadata_columns: []
-metadata_head_hidden: 0
+use_metadata: true
+metadata_columns: [gender, age]
+metadata_head_hidden: 64
 
 # Data loading
 num_workers: 4

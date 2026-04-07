@@ -1,4 +1,5 @@
 from .efficientnet import EfficientNetClassifier
+from .efficientnet_vessel import EfficientNetVesselClassifier
 from .dinov2 import DINOv2Classifier
 from .dinov3 import DINOv3Classifier
 from .resnet import ResNetClassifier
@@ -11,6 +12,7 @@ from .swanV2 import SWANv2Classifier
 
 MODEL_REGISTRY: dict[str, type] = {
     "efficientnet": EfficientNetClassifier,
+    "efficientnet_vessel": EfficientNetVesselClassifier,
     "dinov2": DINOv2Classifier,
     "dinov3": DINOv3Classifier,
     "swinv2": SWANv2Classifier,
