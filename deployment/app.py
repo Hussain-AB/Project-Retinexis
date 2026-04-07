@@ -20,6 +20,13 @@ from PIL import Image
 from datetime import datetime
 from huggingface_hub import hf_hub_download
 from src.models import create_model
+import base64
+
+
+_HERE = os.path.dirname(os.path.abspath(__file__))
+gr.set_static_paths(paths=[os.path.join(_HERE, "images")])
+
+
 
 
 # ── Model cache ──────────────────────────────────────────────────────────────
@@ -494,7 +501,7 @@ def dual_predict_and_log(image_left, image_right, task, model_name, age, sex, hi
 CUSTOM_CSS = """
 @import url('https://fonts.googleapis.com/css2?family=DM+Serif+Display&display=swap');
 .gradio-container { border-top: 8px solid #185FA5 !important; }
-.retinexis-eyebrow { text-align: center; font-size: 0.7rem; letter-spacing: 0.12em; text-transform: uppercase; color: #0F6E56; font-weight: 500; margin-bottom: 4px; }
+.retinexis-eyebrow { text-align: center; font-size: 1rem; letter-spacing: 0.12em; text-transform: uppercase; color: #0F6E56; font-weight: 500; margin-bottom: 4px; }
 .retinexis-title { text-align: center; font-family: 'DM Serif Display', Georgia, serif !important; font-size: 2rem !important; font-weight: 400 !important; line-height: 1.1; margin-bottom: 4px; }
 .retinexis-subtitle { text-align: center; color: #6b7280; font-size: 0.85rem; margin-bottom: 1.5rem; }
 .retinexis-header-wrap { position: relative; text-align: center; padding: 2rem 0 0.5rem; overflow: visible; }
@@ -696,12 +703,22 @@ def build_prediction_subtabs(task, session_history):
     })
     return components
 
-
 def build_app():
     with gr.Blocks(title="Project Retinexis", css=CUSTOM_CSS, theme=gr.themes.Soft()) as app:
-        gr.HTML("""
+        def _logo_uri(filename, media_type):
+            path = os.path.join(_HERE, "images", filename)
+            with open(path, "rb") as f:
+                return f"data:{media_type};base64," + base64.b64encode(f.read()).decode()
+
+        kcl_uri = _logo_uri("kingslogo.png", "image/png")
+        sdm_uri = _logo_uri("SDM.jpeg", "image/jpeg")
+
+        gr.HTML(f"""
             <div class="retinexis-header-wrap">
-                <div class="retinexis-circles"></div>
+                <div style="display:flex;justify-content:center;align-items:center;gap:2rem;margin-bottom:0.5rem">
+                    <img src="{kcl_uri}" alt="King's College London" style="height:45px">
+                    <img src="{sdm_uri}" alt="SDM" style="height:45px">
+                </div>
                 <div class="retinexis-eyebrow">Retinal AI diagnostics</div>
                 <h1 class="retinexis-title">Retinexis</h1>
                 <p class="retinexis-subtitle">The eye knows more than it sees</p>
@@ -727,4 +744,4 @@ def build_app():
 
 
 if __name__ == "__main__":
-    build_app().launch(server_name="0.0.0.0", server_port=7860, share=False)
+   build_app().launch(server_name="0.0.0.0", server_port=7860, share=False, allowed_paths=[os.path.join(_HERE, "images")])
