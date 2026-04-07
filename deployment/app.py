@@ -21,6 +21,7 @@ from datetime import datetime
 from huggingface_hub import hf_hub_download
 from src.models import create_model
 import base64
+import pandas as pd
 
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -37,7 +38,7 @@ _MODEL_CACHE = {}
 # ── Model & checkpoint configuration ────────────────────────────────────────
 
 TASK_MODELS = {
-    "CVD Risk": {
+ "CVD Risk": {
         "RETFound-MAE": {
             "architecture": "retfound_mae",
             "variant": "default",
@@ -53,12 +54,30 @@ TASK_MODELS = {
             "variant": "b2",
             "description": "CNN baseline — lightweight and fast",
         },
-    },
-    "Hypertension": {
-        "DINOv3-Large": {
+        "EfficientNet-B2 (Multimodal segmentation)": {
+            "architecture": "efficientnet",
+            "variant": "b2",
+            "description": "EfficientNet + age/gender metadata",
+            "multimodal": True,
+        },
+        "DINOv2-Large (Multimodal)": {
+            "architecture": "dinov2",
+            "variant": "large",
+            "description": "DINOv2 + age/gender metadata",
+            "multimodal": True,
+        },
+        "DINOv3-Large (Multimodal)": {
             "architecture": "dinov3",
             "variant": "large",
-            "description": "Latest generalist ViT — top performer on hypertension",
+            "description": "DINOv3 + age/gender metadata",
+            "multimodal": True,
+        },
+    },
+    "Hypertension": {
+        "EfficientNet-B2": {
+            "architecture": "efficientnet",
+            "variant": "b2",
+            "description": "CNN baseline — lightweight and fast",
         },
         "RETFound-MAE": {
             "architecture": "retfound_mae",
@@ -70,6 +89,24 @@ TASK_MODELS = {
             "variant": "large",
             "description": "General-purpose ViT — capacity-matched generalist",
         },
+        "EfficientNet-B2 (Multimodal segmentation)": {
+            "architecture": "efficientnet",
+            "variant": "b2",
+            "description": "EfficientNet + age/gender metadata",
+            "multimodal": True,
+        },
+        "DINOv2-Large (Multimodal)": {
+            "architecture": "dinov2",
+            "variant": "large",
+            "description": "DINOv2 + age/gender metadata",
+            "multimodal": True,
+        },
+        "DINOv3-Large (Multimodal)": {
+            "architecture": "dinov3",
+            "variant": "large",
+            "description": "DINOv3 + age/gender metadata",
+            "multimodal": True,
+        },
     },
 }
 
@@ -80,9 +117,12 @@ HF_CHECKPOINTS = {
         "EfficientNet-B2": "cimt/efficientnet/best.pt",
     },
     "Hypertension": {
-        "DINOv3-Large": "hypertension_combined/dinov3/best.pt",
+        "EfficientNet-B2": "hypertension_combined/efficientnet/best.pt",
         "RETFound-MAE": "hypertension_combined/retfound_mae/best.pt",
         "DINOv2-Large": "hypertension_combined/dinov2/best.pt",
+        "EfficientNet-B2 (Multimodal segmentation)": "multimodal_models/hypertension_combined/efficientnet/best.pt",
+        "DINOv2-Large (Multimodal)": "multimodal_models/hypertension_combined/dinov2/best.pt",
+        "DINOv3-Large (Multimodal)": "multimodal_models/hypertension_combined/dinov3/best.pt",
     },
 }
 
@@ -103,10 +143,12 @@ def get_model_description(task: str, model_name: str) -> str:
 # ── Inference pipeline ──────────────────────────────────────────────────────
 
 def load_model(task: str, model_name: str):
-    """Load a trained model checkpoint from Hugging Face, with caching."""
+    """Load a trained model checkpoint from Hugging Face, with caching.
+    For multimodal models, also loads the metadata head + encoder."""
     cache_key = f"{task}:{model_name}"
     if cache_key in _MODEL_CACHE:
-        return _MODEL_CACHE[cache_key]
+        cached = _MODEL_CACHE[cache_key]
+        return cached, cached["preprocessing_config"]
 
     hf_path = HF_CHECKPOINTS.get(task, {}).get(model_name)
     if hf_path is None:
@@ -115,6 +157,7 @@ def load_model(task: str, model_name: str):
     model_info = TASK_MODELS.get(task, {}).get(model_name, {})
     architecture = model_info.get("architecture")
     variant = model_info.get("variant")
+    is_multimodal = model_info.get("multimodal", False)
 
     if variant and variant != "default":
         model = create_model(architecture, variant=variant, pretrained=False)
@@ -129,7 +172,7 @@ def load_model(task: str, model_name: str):
     checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
     state_dict = checkpoint["model_state_dict"]
 
-    # Remove keys with shape mismatches (e.g. DINOv3 mask_token)
+    # Remove keys with shape mismatches
     model_state = model.state_dict()
     for key in list(state_dict.keys()):
         if key in model_state and state_dict[key].shape != model_state[key].shape:
@@ -138,9 +181,26 @@ def load_model(task: str, model_name: str):
     model.load_state_dict(state_dict, strict=False)
     model.eval()
 
-    _MODEL_CACHE[cache_key] = (model, model.preprocessing_config)
-    return model, model.preprocessing_config
+    # For multimodal models, also load the metadata head and encoder
+    metadata_head = None
+    metadata_encoder = None
+    if is_multimodal:
+        if "metadata_head_state_dict" not in checkpoint or "metadata_encoder" not in checkpoint:
+            raise gr.Error(f"Model {model_name} is marked multimodal but checkpoint is missing metadata components.")
+        metadata_head = _build_metadata_head_from_state(checkpoint["metadata_head_state_dict"])
+        metadata_head.load_state_dict(checkpoint["metadata_head_state_dict"])
+        metadata_head.eval()
+        metadata_encoder = MetadataEncoder.from_dict(checkpoint["metadata_encoder"])
 
+    bundle = {
+        "model": model,
+        "preprocessing_config": model.preprocessing_config,
+        "metadata_head": metadata_head,
+        "metadata_encoder": metadata_encoder,
+        "is_multimodal": is_multimodal,
+    }
+    _MODEL_CACHE[cache_key] = bundle
+    return bundle, model.preprocessing_config
 
 # Task-specific preprocessing helpers 
 
@@ -164,7 +224,64 @@ def _clahe_cimt(img):
     g_enhanced = clahe.apply(g)
     return cv2.merge((r, g_enhanced, b))
 
+# Multimodal helpers (for models that fuse image features + patient metadata)
 
+class MetadataEncoder:
+    """Replicates src/data/base_dataset.py::MetadataEncoder for inference.
+    Reconstructs from the dict saved in multimodal checkpoints."""
+
+    def __init__(self):
+        self._continuous_cols = []
+        self._categorical_cols = []
+        self._means = {}
+        self._stds = {}
+        self._category_maps = {}
+        self._output_dim = 0
+
+    @classmethod
+    def from_dict(cls, d):
+        enc = cls()
+        enc._continuous_cols = d["continuous_cols"]
+        enc._categorical_cols = d["categorical_cols"]
+        enc._means = d["means"]
+        enc._stds = d["stds"]
+        enc._category_maps = d["category_maps"]
+        enc._output_dim = d["output_dim"]
+        return enc
+
+    @property
+    def output_dim(self):
+        return self._output_dim
+
+    def encode(self, row: dict) -> torch.Tensor:
+        """Encode a dict of {column_name: value} into a flat tensor."""
+        parts = []
+        for col in self._continuous_cols:
+            val = float(row[col]) if row.get(col) is not None else 0.0
+            parts.append((val - self._means[col]) / self._stds[col])
+        for col in self._categorical_cols:
+            cat_map = self._category_maps[col]
+            one_hot = [0.0] * len(cat_map)
+            val = row.get(col)
+            if val is not None and val in cat_map:
+                one_hot[cat_map[val]] = 1.0
+            parts.extend(one_hot)
+        return torch.tensor(parts, dtype=torch.float32)
+
+
+def _build_metadata_head_from_state(state_dict):
+    """Reconstruct the metadata head architecture from a saved state dict.
+    Reads the layer shapes to figure out input_dim and hidden_dim automatically.
+    Matches trainer.py::_build_metadata_head."""
+    # Layer 0 is the first Linear: shape (hidden_dim, input_dim)
+    first_w = state_dict["0.weight"]
+    hidden_dim, input_dim = first_w.shape[0], first_w.shape[1]
+    return nn.Sequential(
+        nn.Linear(input_dim, hidden_dim),
+        nn.ReLU(),
+        nn.Dropout(0.3),
+        nn.Linear(hidden_dim, 1),
+    )
 
 
 
@@ -191,22 +308,41 @@ def preprocess_image(image: np.ndarray, preprocessing_config, task=None) -> torc
     return tensor
 
 
-def run_inference(model, image_tensor, metadata: dict | None = None) -> dict:
-    """Run model inference on a preprocessed image."""
-    if model is None:
-        dummy_prob = float(np.random.uniform(0.2, 0.8))
-        return {
-            "probability": dummy_prob,
-            "prediction": int(dummy_prob > 0.5),
-            "confidence": abs(dummy_prob - 0.5) * 2,
-        }
+def run_inference(bundle, image_tensor, metadata: dict | None = None) -> dict:
+    """Run model inference. Handles both image-only and multimodal models."""
+    if bundle is None:
+        raise gr.Error("Model could not be loaded. Please try a different model or check your connection.")
+        
+
+    model = bundle["model"]
+    is_multimodal = bundle["is_multimodal"]
+    metadata_head = bundle["metadata_head"]
+    metadata_encoder = bundle["metadata_encoder"]
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = model.to(device)
     image_tensor = image_tensor.to(device)
 
     with torch.no_grad():
-        logits = model(image_tensor)
+        if is_multimodal:
+            # Validate metadata is provided
+            if not metadata or "age" not in metadata or "sex" not in metadata:
+                raise gr.Error(
+                    f"This model requires patient metadata (age and sex). "
+                    f"Please fill in both fields under 'Patient metadata'."
+                )
+            # Encode metadata: convert UI's sex (0/1) to the encoder's labels ('Female'/'Male')
+            sex_str = "Male" if int(metadata["sex"]) == 1 else "Female"
+            row = {"age": float(metadata["age"]), "gender": sex_str}
+            metadata_tensor = metadata_encoder.encode(row).unsqueeze(0).to(device)
+
+            # Forward: features → concat → metadata_head
+            metadata_head.to(device)
+            features = model.get_features(image_tensor)
+            combined = torch.cat([features, metadata_tensor], dim=1)
+            logits = metadata_head(combined)
+        else:
+            logits = model(image_tensor)
 
     prob = torch.sigmoid(logits).item()
     return {
@@ -230,9 +366,9 @@ def predict(image, task, model_name, age, sex):
     if sex is not None and sex != "":
         metadata["sex"] = int(sex)
 
-    model, preprocessing_config = load_model(task, model_name)
+    bundle, preprocessing_config = load_model(task, model_name)
     image_tensor = preprocess_image(np.array(image), preprocessing_config, task=task)
-    result = run_inference(model, image_tensor, metadata)
+    result = run_inference(bundle, image_tensor, metadata)
 
     prob = result["probability"]
     pred = result["prediction"]
@@ -409,10 +545,11 @@ def generate_saliency_map(image, task, model_name):
     if image is None:
         raise gr.Error("Please upload an image first.")
 
-    model, preprocessing_config = load_model(task, model_name)
-    if model is None:
+    bundle, preprocessing_config = load_model(task, model_name)
+    if bundle is None:
         return image, "**Model not yet loaded.**"
 
+    model = bundle["model"]
     arch_type = _architecture_type(task, model_name)
     architecture = TASK_MODELS.get(task, {}).get(model_name, {}).get("architecture", "")
     image_tensor = preprocess_image(np.array(image), preprocessing_config, task=task)
@@ -450,12 +587,12 @@ def compare_models(image, task, age, sex):
 
     for name in model_names:
         try:
-            model, preprocessing_config = load_model(task, name)
-            if model is None:
+            bundle, preprocessing_config = load_model(task, name)
+            if bundle is None:
                 error_rows.append((name, "Model not yet loaded"))
                 continue
             image_tensor = preprocess_image(img_array, preprocessing_config, task=task)
-            result = run_inference(model, image_tensor, metadata)
+            result = run_inference(bundle, image_tensor, metadata)
             rows.append((name, _architecture_type(task, name).upper(), "Positive" if result["prediction"] == 1 else "Negative", result["probability"], result["confidence"]))
         except gr.Error:
             raise
@@ -688,9 +825,11 @@ def build_prediction_subtabs(task, session_history):
                         cmp_age = gr.Number(label="Age", precision=0)
                         cmp_sex = gr.Dropdown(choices=[("Female", 0), ("Male", 1)], label="Sex", type="index")
                     cmp_btn = gr.Button("Compare all models", variant="primary", elem_classes=btn_class)
+                    cmp_clear_btn = gr.Button("Clear results", size="sm")
                 with gr.Column(scale=1):
                     cmp_output = gr.Markdown(value="*Upload an image and click Compare all models.*")
             cmp_btn.click(fn=compare_models, inputs=[cmp_image, task_state, cmp_age, cmp_sex], outputs=[cmp_output])
+            cmp_clear_btn.click(fn=lambda: "*Upload an image and click Compare all models.*", inputs=[], outputs=[cmp_output])
 
         with gr.Tab("Dual eye"):
             gr.Markdown("Upload left and right eye images for a complete analysis.")
