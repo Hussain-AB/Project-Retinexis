@@ -11,19 +11,11 @@
 #
 # Prerequisites before running:
 #   1. Have a trained efficientnet Phase 2 checkpoint (update backbone_checkpoint_path)
-#   2. Generate vessel masks — see below:
+#   2. Generate vessel masks:
 #
-#   cd src/rrwnet
-#   python get_predictions.py \
-#     --weights /path/to/rrwnet_weights.pth \
-#     --images-path ../../data/cimt/Fundus_CIMT_2903_Dataset/images_preprocessed \
-#     --masks-path ../../data/cimt/Fundus_CIMT_2903_Dataset/roi_masks \
-#     --save-path ../../data/cimt/vessel_masks \
-#     --preprocess
-#
-#   The script requires ROI masks (binary PNG per image marking the fundus
-#   circle). If you don't have them, a circular crop mask can be generated
-#   from the images programmatically (ask for a helper script if needed).
+#   python scripts/generate_vessel_masks.py \
+#     --images-dir data/cimt/Fundus_CIMT_2903_Dataset/images_preprocessed \
+#     --save-dir data/cimt/vessel_masks
 
 # Identity
 dataset: cimt
