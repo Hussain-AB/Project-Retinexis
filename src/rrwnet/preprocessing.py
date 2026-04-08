@@ -12,6 +12,30 @@ from skimage.morphology import disk
 
 
 
+def remove_corner_artifact(img, width=90, height=50, white_threshold=200):
+    """Black out top-left corner watermark from raw CIMT fundus images.
+
+    Mirrors remove_top_left_overlay() from tasks/cimt/dataprep/Data_prep.ipynb.
+    Replaces the [:height, :width] region with [6, 6, 6] if any white pixels
+    (> white_threshold) are detected there.
+
+    Args:
+        img (np.ndarray): RGB image array (H, W, 3)
+        width (int): Width of corner region to check (default 90)
+        height (int): Height of corner region to check (default 50)
+        white_threshold (int): Pixel value above which a pixel is considered white (default 200)
+
+    Returns:
+        np.ndarray: Image with corner artifact removed
+    """
+    img = img.copy()
+    region = img[:height, :width]
+    gray = region.max(axis=2) if region.ndim == 3 else region
+    if np.any(gray > white_threshold):
+        img[:height, :width] = np.array([6, 6, 6], dtype=img.dtype)
+    return img
+
+
 def crop_center(img, cropx, cropy):
     y, x = img.shape[0], img.shape[1]
     startx = x//2-(cropx//2)

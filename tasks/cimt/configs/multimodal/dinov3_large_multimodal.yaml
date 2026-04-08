@@ -50,7 +50,7 @@ pos_weight: null
 
 # Metadata fusion
 use_metadata: true
-metadata_columns: [age, gender]
+metadata_columns: ["age", "gender"]
 metadata_head_hidden: 64
 
 # Data loading

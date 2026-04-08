@@ -1,0 +1,100 @@
+# EfficientNet-B2 Vessel + Metadata Multimodal — CIMT Dataset
+#
+# Architecture:
+#   Image branch:  EfficientNet-B2 (ImageNet init)
+#   Vessel branch: EfficientNet-B0 (ImageNet init)
+#   Metadata:      age + gender fused via metadata_head
+#
+# Training flow:
+#   Phase 1 — image backbone frozen, vessel backbone + head train on CIMT
+#   Phase 2 — full fine-tune: both backbones + metadata head jointly
+#
+# Prerequisites before running:
+#   Generate vessel masks:
+#
+#   python scripts/generate_vessel_masks.py \
+#     --images-dir data/cimt/Fundus_CIMT_2903_Dataset/images_preprocessed \
+#     --save-dir data/cimt/vessel_masks
+
+# Identity
+dataset: cimt
+architecture: efficientnet_vessel
+model_kwargs:
+  variant: b2
+  pretrained: true
+  drop_rate: 0.3
+
+# Paths
+data_dir: data/cimt/Fundus_CIMT_2903_Dataset/images_preprocessed
+labels_csv: data/cimt/Fundus_CIMT_2903_Dataset/metadata_processed/processed_metadata.csv
+splits_file: tasks/cimt/splits/cimt_5fold_splits.json
+output_dir: outputs_segmentation_multimodal
+
+# Column mapping
+sample_id_col: image_id
+label_col: label
+patient_id_col: patient_id
+
+# Cross-validation (run once per fold 0–4 for full CV)
+fold: 0
+
+# Warm-start from the trained vessel-only model (efficientnet_b2_vessel).
+# Per-fold checkpoint path is injected by submit_vessel.sh at runtime.
+backbone_checkpoint_path: null
+
+skip_phase1: true
+phase1_epochs: 5
+phase1_lr: 1e-3
+phase1_batch_size: 32
+
+# Phase 2: full fine-tune
+# Lower LR than image-only (2 backbones + new head = more capacity to overfit)
+phase2_epochs: 50
+phase2_lr: 5e-5
+phase2_batch_size: 16
+lr_decay_factor: 0.65
+warmup_epochs: 5
+patience: 7
+weight_decay: 0.05
+min_lr: 1e-6
+
+# Loss
+use_weighted_bce: true
+pos_weight: null
+
+# Vessel mask fusion (RRWNet output)
+use_vessel_masks: true
+vessel_mask_dir: data/cimt/vessel_masks
+
+# Metadata fusion
+use_metadata: true
+metadata_columns: ["age", "gender"]
+metadata_head_hidden: 64
+
+# Data loading
+num_workers: 4
+pin_memory: true
+persistent_workers: true
+prefetch_factor: 2
+
+# Augmentation (same as image-only — vessel masks NOT augmented, image only)
+aug_hflip: true
+aug_rotation: 10
+aug_scale_min: 0.98
+aug_scale_max: 1.02
+aug_brightness: 0.05
+aug_contrast: 0.05
+aug_saturation: 0.0
+aug_hue: 0.0
+aug_blur_prob: 0.4
+aug_blur_limit: 3
+aug_random_erasing: 0.0
+
+# Reproducibility
+seed: 42
+deterministic: true
+
+# Logging
+use_wandb: true
+wandb_project: retinexis
+wandb_entity: project_retinexis-king-s-college-london

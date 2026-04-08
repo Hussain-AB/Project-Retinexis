@@ -4,9 +4,8 @@
 
 # Identity
 dataset: cimt
-architecture: dinov2
+architecture: retfound_dinov2
 model_kwargs:
-  variant: large
   pretrained: true
 
 # Paths
@@ -38,7 +37,7 @@ phase1_batch_size: 64
 # Cosine schedule with 5-epoch linear warmup prevents early instability.
 phase2_epochs: 50
 phase2_lr: 1e-4
-phase2_batch_size: 32
+phase2_batch_size: 16
 lr_decay_factor: 0.65
 warmup_epochs: 5
 patience: 7

@@ -54,7 +54,7 @@ pos_weight: null
 # metadata_head_hidden: 64 means a two-layer MLP (feature_dim + metadata_dim → 64 → 1)
 # Set to 0 for a single linear projection instead.
 use_metadata: true
-metadata_columns: [age, gender]
+metadata_columns: ["age", "gender"]
 metadata_head_hidden: 64
 
 # Data loading

@@ -7,6 +7,9 @@ _EXPECTED_KWARGS: dict[str, set[str]] = {
     "efficientnet": {
         "variant", "num_classes", "pretrained", "drop_rate", "input_size_override",
     },
+    "efficientnet_vessel": {
+        "variant", "num_classes", "pretrained", "drop_rate", "input_size_override",
+    },
     "dinov2": {
         "variant",
         "num_classes",

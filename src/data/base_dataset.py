@@ -56,8 +56,9 @@ from torch.utils.data import Dataset
 
 # Return type
 class SampleDict(TypedDict, total=False):
-    """Return type for __getitem__. 'metadata' is present only when enabled."""
+    """Return type for __getitem__. 'metadata' and 'vessel_mask' are optional."""
     image: torch.Tensor         # (3, H, W)
+    vessel_mask: torch.Tensor   # (3, H, W) — only present when use_vessel_masks=True
     metadata: torch.Tensor      # (D,) — only present when use_metadata=True
     label: torch.Tensor         # (1,)
     patient_id: str
@@ -223,6 +224,8 @@ class BaseRetinalDataset(Dataset, ABC):
         label_col: str = "label",
         patient_id_col: str = "patient_id",
         metadata_encoder: MetadataEncoder | None = None,
+        vessel_mask_dir: str | None = None,
+        vessel_transform: callable | None = None,
     ) -> None:
         """
         Args:
@@ -241,6 +244,12 @@ class BaseRetinalDataset(Dataset, ABC):
             metadata_encoder: Fitted MetadataEncoder, or None if metadata
                 is disabled. When provided, __getitem__ must include
                 "metadata" in the returned SampleDict.
+            vessel_mask_dir: Directory containing pre-generated RRWNet vessel
+                masks. Filenames must match the image filenames. When set,
+                __getitem__ must include "vessel_mask" in the returned SampleDict.
+            vessel_transform: Transform to apply to vessel mask PIL Images.
+                Built from model.vessel_preprocessing_config by transforms.py.
+                Required when vessel_mask_dir is set.
         """
         super().__init__()
         self.df = df.reset_index(drop=True)
@@ -249,6 +258,8 @@ class BaseRetinalDataset(Dataset, ABC):
         self.label_col = label_col
         self.patient_id_col = patient_id_col
         self.metadata_encoder = metadata_encoder
+        self.vessel_mask_dir = Path(vessel_mask_dir) if vessel_mask_dir else None
+        self.vessel_transform = vessel_transform
 
         # Validate required columns exist
         if self.label_col not in self.df.columns:

@@ -152,6 +152,11 @@ class Trainer:
         # Stash for checkpoint resume data. _load_checkpoint stores
         self._resume_checkpoint: dict | None = None
 
+        # Partial backbone warm-start (vessel model: load image backbone
+        # weights from a trained image-only checkpoint, ignore the rest)
+        if getattr(config, "backbone_checkpoint_path", None):
+            self._load_backbone_weights(config.backbone_checkpoint_path)
+
         # Save resolved config (exists even if job is killed)
         config.save(config.run_dir / "config_resolved.yaml")
 
@@ -205,10 +210,16 @@ class Trainer:
 
         # Build optimiser on head params only (flat LR, no decay).
         # In metadata mode, optimise metadata_head instead.
+        # For vessel models, also include vessel backbone (new branch).
         if self.metadata_head is not None:
             head_params = list(self.metadata_head.parameters())
         else:
             head_params = list(self.model.head.parameters())
+
+        extra_modules = getattr(self.model, "extra_modules", None)
+        if extra_modules:
+            for module in extra_modules:
+                head_params += [p for p in module.parameters() if p.requires_grad]
 
         optimiser = AdamW(head_params, lr=config.phase1_lr)
 
@@ -297,6 +308,7 @@ class Trainer:
             lr_decay_factor=config.lr_decay_factor,
             weight_decay=config.weight_decay,
             metadata_head=self.metadata_head,
+            extra_modules=getattr(self.model, "extra_modules", None),
         )
         optimiser = AdamW(param_groups)
 
@@ -457,14 +469,23 @@ class Trainer:
 
         return avg_loss, metrics
 
-    #  FORWARD PASS: image-only vs metadata mode
+    #  FORWARD PASS: image-only / vessel / metadata / vessel+metadata
     def _forward(self, batch: dict, images: torch.Tensor) -> torch.Tensor:
-        """Routes to model(images) or get_features + metadata_head."""
+        """Routes forward pass based on active modalities."""
+        vessel_mask = None
+        if getattr(self.config, "use_vessel_masks", False):
+            vessel_mask = batch["vessel_mask"].to(self.device, non_blocking=True)
+
         if self.metadata_head is not None:
-            features = self.model.get_features(images)
+            if vessel_mask is not None:
+                features = self.model.get_features(images, vessel_mask)
+            else:
+                features = self.model.get_features(images)
             metadata = batch["metadata"].to(self.device, non_blocking=True)
             combined = torch.cat([features, metadata], dim=1)
             return self.metadata_head(combined)
+        elif vessel_mask is not None:
+            return self.model(images, vessel_mask)
         else:
             return self.model(images)
 
@@ -527,6 +548,30 @@ class Trainer:
         self.model.load_state_dict(checkpoint["model_state_dict"])
         if "metadata_head_state_dict" in checkpoint and self.metadata_head is not None:
             self.metadata_head.load_state_dict(checkpoint["metadata_head_state_dict"])
+
+    def _load_backbone_weights(self, path: str) -> None:
+        """Partial warm-start: copy only shape-matching keys from checkpoint.
+
+        Used to initialise the image backbone of EfficientNetVessel from a
+        trained image-only checkpoint. Keys that don't exist in the current
+        model or have a shape mismatch (e.g. the head, or vessel backbone keys
+        that don't appear in the source checkpoint) are silently skipped.
+        """
+        print(f"  Partial backbone warm-start from: {path}")
+        checkpoint = torch.load(path, map_location=self.device, weights_only=False)
+        source_state = checkpoint["model_state_dict"]
+        target_state = self.model.state_dict()
+
+        matched = {
+            k: v for k, v in source_state.items()
+            if k in target_state and v.shape == target_state[k].shape
+        }
+        skipped = len(source_state) - len(matched)
+
+        target_state.update(matched)
+        self.model.load_state_dict(target_state)
+        print(f"  Loaded {len(matched)} matching keys, skipped {skipped} "
+              f"(shape mismatch or new layers — kept pretrained init)")
 
     #  FINAL EVALUATION
     def _evaluate_final(self) -> dict:

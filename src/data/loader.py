@@ -26,7 +26,7 @@ import pandas as pd
 from torch.utils.data import DataLoader
 
 from src.data.base_dataset import BaseRetinalDataset, MetadataEncoder
-from src.data.transforms import build_transforms
+from src.data.transforms import build_transforms, build_vessel_transforms
 from src.models.base import BaseClassifier
 
 
@@ -104,6 +104,19 @@ def create_dataloaders(
         encoder = MetadataEncoder(config.metadata_columns)
         encoder.fit(train_df)
 
+    # Build vessel mask transform (if enabled)
+    vessel_mask_dir = None
+    vessel_transform = None
+    if getattr(config, "use_vessel_masks", False):
+        vessel_cfg = getattr(model, "vessel_preprocessing_config", None)
+        if vessel_cfg is None:
+            raise ValueError(
+                f"use_vessel_masks=True but model '{type(model).__name__}' has no "
+                f"vessel_preprocessing_config property. Use architecture=efficientnet_vessel."
+            )
+        vessel_mask_dir = config.vessel_mask_dir
+        vessel_transform = build_vessel_transforms(vessel_cfg)
+
     # Construct dataset instances
     train_dataset = DatasetClass(
         df=train_df,
@@ -112,6 +125,8 @@ def create_dataloaders(
         label_col=config.label_col,
         patient_id_col=config.patient_id_col,
         metadata_encoder=encoder,
+        vessel_mask_dir=vessel_mask_dir,
+        vessel_transform=vessel_transform,
     )
     val_dataset = DatasetClass(
         df=val_df,
@@ -120,6 +135,8 @@ def create_dataloaders(
         label_col=config.label_col,
         patient_id_col=config.patient_id_col,
         metadata_encoder=encoder,
+        vessel_mask_dir=vessel_mask_dir,
+        vessel_transform=vessel_transform,
     )
 
     # Wrap in DataLoaders
