@@ -38,12 +38,9 @@ patient_id_col: patient_id
 # Cross-validation (run once per fold 0–4 for full CV)
 fold: 0
 
-# Warm-start: copy image backbone weights from the trained image-only run.
-# Head is NOT loaded (wrong size: 2688 vs 1408) — re-initialised automatically.
-# Vessel backbone NOT loaded (new branch) — starts from ImageNet init.
-backbone_checkpoint_path: outputs/cimt/efficientnet/fold_0/checkpoints/best.pt
+# Both backbones start from ImageNet and train jointly from Phase 2.
+backbone_checkpoint_path: null
 
-# Skip Phase 1 — image backbone already trained; go straight to Phase 2
 skip_phase1: true
 phase1_epochs: 5
 phase1_lr: 1e-3

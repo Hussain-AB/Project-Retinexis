@@ -11,7 +11,7 @@ REPO_DIR="/home/x_albeshh/Project-Retinexis"
 CONFIG_DIR="tasks/cimt/configs/vessel"
 
 configs=(
-    "${REPO_DIR}/${CONFIG_DIR}/efficientnet_b2_vessel.yaml"
+    #"${REPO_DIR}/${CONFIG_DIR}/efficientnet_b2_vessel.yaml"
     "${REPO_DIR}/${CONFIG_DIR}/efficientnet_b2_vessel_multimodal.yaml"
 )
 
@@ -23,7 +23,11 @@ for config_path in "${configs[@]}"; do
     config_file=$(basename "$config_path")
     model_name="${config_file%.yaml}"
 
-    LOG_DIR="${REPO_DIR}/outputs_segmentation/segmentation_${model_name}"
+    if [[ "$model_name" == *"multimodal"* ]]; then
+        LOG_DIR="${REPO_DIR}/outputs_segmentation_multimodal/segmentation_${model_name}"
+    else
+        LOG_DIR="${REPO_DIR}/outputs_segmentation/segmentation_${model_name}"
+    fi
     mkdir -p "${LOG_DIR}"
 
     echo "  Submitting: ${model_name}"
@@ -31,7 +35,7 @@ for config_path in "${configs[@]}"; do
     sbatch <<EOF
 #!/bin/bash
 #SBATCH --job-name=${model_name}
-#SBATCH --array=0-4
+#SBATCH --array=0
 #SBATCH --output=${LOG_DIR}/%x_%A_%a.out
 #SBATCH --error=${LOG_DIR}/%x_%A_%a.err
 #SBATCH --nodes=1
@@ -54,11 +58,17 @@ echo "Node:   \$(hostname)"
 echo "GPU:    \$(nvidia-smi --query-gpu=name --format=csv,noheader)"
 echo "============================================"
 
+if [[ "${config_file}" == *"multimodal"* ]]; then
+    CHECKPOINT_OVERRIDE="--override backbone_checkpoint_path outputs_segmentation/cimt/efficientnet_vessel/fold_\${SLURM_ARRAY_TASK_ID}/checkpoints/best.pt"
+else
+    CHECKPOINT_OVERRIDE=""
+fi
+
 python scripts/train.py \
     --config ${CONFIG_DIR}/${config_file} \
     --fold \${SLURM_ARRAY_TASK_ID} \
     --skip_phase1 \
-    --override backbone_checkpoint_path outputs/cimt/efficientnet/fold_\${SLURM_ARRAY_TASK_ID}/checkpoints/best.pt
+    \${CHECKPOINT_OVERRIDE}
 
 echo "Done: ${model_name} fold \${SLURM_ARRAY_TASK_ID}"
 EOF
@@ -68,7 +78,9 @@ done
 echo ""
 echo "=========================================="
 echo "Submitted ${#configs[@]} models ($(( ${#configs[@]} * 5 )) jobs total)."
-echo "Logs:    outputs_segmentation/segmentation_{model_name}/"
-echo "Models:  outputs_segmentation/cimt/efficientnet_vessel/fold_N/"
+echo "Logs:    outputs_segmentation/segmentation_efficientnet_b2_vessel/"
+echo "         outputs_segmentation_multimodal/segmentation_efficientnet_b2_vessel_multimodal/"
+echo "Models:  outputs_segmentation/cimt/efficientnet_vessel/"
+echo "         outputs_segmentation_multimodal/cimt/efficientnet_vessel/"
 echo "Monitor: squeue -u \$USER"
 echo "=========================================="
