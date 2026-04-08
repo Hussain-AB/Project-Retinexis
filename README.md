@@ -1,6 +1,49 @@
 # Project-Retinexis
 Deep Learning for Non-Invasive Systemic Disease Detection from Retinal Images
 
+## Team
+
+**Team Name:** Retinexis
+
+**Members:**
+- Faisal Almofadhi
+- Frederick De Rivaz
+- Wesam Alsaqr
+- Abdalla Alhajeri
+- Ali Alharmoodi
+- Omar Abdulaal
+- Layan Alsubhi
+- Talia Almarzouki
+- Arnav Gupta
+- Hussain Albeshri
+
+**Repository:** https://github.com/Hussain-AB/Project-Retinexis.git
+
+**Deployed App:** https://huggingface.co/spaces/talia-marzouki/Project-Retinexis
+
+**Models HF Repo:** https://huggingface.co/Faisasa12/Project-Retinexis/tree/main
+
+## Models
+
+Trained models are deployed on Hugging Face and require no local setup. Visit the deployed app above to run inference directly in your browser.
+
+## Running Locally
+
+Install dependencies:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install --upgrade pip
+pip install -r requirements.txt
+```
+
+Then run training directly via:
+
+```bash
+python scripts/train.py --config <config_path> --fold <0-4>
+```
+
 ## Testing
 
 ### Environment setup
