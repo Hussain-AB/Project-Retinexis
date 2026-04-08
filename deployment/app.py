@@ -7,7 +7,7 @@ and hypertension detection using deep learning models.
 
 import sys
 import os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, os.path.dirname(__file__))
 
 import re
 import json
@@ -781,7 +781,17 @@ _GRADCAM_TARGET_LAYER_MAP = {
 def _get_target_layers(model, model_name=""):
     if model_name in _GRADCAM_TARGET_LAYER_MAP:
         return _GRADCAM_TARGET_LAYER_MAP[model_name](model)
-    backbone = getattr(model, "_backbone", model)
+    # Unwrap _SaliencyWrapper if present
+    inner = getattr(model, "model", model)
+    # Vessel dual-stream: target the image backbone only
+    if hasattr(inner, "_image_backbone"):
+        last_conv = None
+        for m in inner._image_backbone.modules():
+            if isinstance(m, nn.Conv2d):
+                last_conv = m
+        if last_conv is not None:
+            return [last_conv]
+    backbone = getattr(inner, "_backbone", inner)
     last_conv = None
     for m in backbone.modules():
         if isinstance(m, nn.Conv2d):
@@ -789,6 +799,8 @@ def _get_target_layers(model, model_name=""):
     if last_conv is None:
         raise gr.Error("Could not find a convolutional layer for GradCAM.")
     return [last_conv]
+
+
 
 
 def _to_batched_tensor(image_tensor):
@@ -829,12 +841,14 @@ def _apply_vit_gradcam(model, image_tensor, original_image, architecture="", opa
     from pytorch_grad_cam import GradCAM
     from pytorch_grad_cam.utils.image import show_cam_on_image
     from pytorch_grad_cam.utils.model_targets import ClassifierOutputTarget
-
-    backbone = getattr(model, "_backbone", model)
+    # Unwrap _SaliencyWrapper if present, then find the real backbone
+    inner = model
+    if hasattr(model, "bundle"):
+        inner = model.model
+    backbone = getattr(inner, "_backbone", None) or getattr(inner, "backbone", None) or getattr(inner, "model", inner)
     device = next(model.parameters()).device
     tensor = _to_batched_tensor(image_tensor).to(device)
-
-    if architecture in ("retfound_mae", "dinov2"):
+    if architecture in ("retfound_mae", "dinov2", "retfound_dinov2"):
         target_layers = [backbone.blocks[-1].norm1]
     elif architecture == "dinov3":
         target_layers = [backbone.encoder.layer[-1].norm1]
@@ -866,8 +880,8 @@ def _apply_vit_gradcam(model, image_tensor, original_image, architecture="", opa
     return Image.fromarray(overlay_arr), "GradCAM"
 
 
-def generate_saliency_and_store(image, task, model_name):
-    overlay, info = generate_saliency_map(image, task, model_name)
+def generate_saliency_and_store(image, task, model_name, age=None, sex=None):
+    overlay, info = generate_saliency_map(image, task, model_name, age=age, sex=sex)
     return overlay, info, overlay, image, True, "Show Original"
 
 
@@ -877,40 +891,108 @@ def toggle_saliency_view(showing_overlay, overlay_img, original_img):
     return overlay_img, True, "Show Original"
 
 
-def generate_saliency_map(image, task, model_name):
+class _SaliencyWrapper(nn.Module):
+    """Wraps multimodal/vessel models into a single-input nn.Module for GradCAM.
+    The vessel mask and metadata tensor are captured at construction time so
+    GradCAM only needs to provide the image tensor."""
+    def __init__(self, bundle, vessel_tensor=None, metadata_tensor=None):
+        super().__init__()
+        self.bundle = bundle
+        self.model = bundle["model"]
+        self.is_multimodal = bundle["is_multimodal"]
+        self.architecture = bundle.get("architecture", "")
+        self.metadata_head = bundle.get("metadata_head")
+        self.vessel_tensor = vessel_tensor
+        self.metadata_tensor = metadata_tensor
+
+    def forward(self, x):
+        if self.architecture == "efficientnet_vessel":
+            if self.is_multimodal and self.metadata_tensor is not None:
+                features = self.model.get_features(x, self.vessel_tensor)
+                combined = torch.cat([features, self.metadata_tensor], dim=1)
+                return self.metadata_head(combined)
+            else:
+                return self.model(x, self.vessel_tensor)
+        else:
+            if self.is_multimodal and self.metadata_tensor is not None:
+                features = self.model.get_features(x)
+                combined = torch.cat([features, self.metadata_tensor], dim=1)
+                return self.metadata_head(combined)
+            else:
+                return self.model(x)
+
+
+def generate_saliency_map(image, task, model_name, age=None, sex=None):
     if image is None:
         raise gr.Error("Please upload an image first.")
-
     bundle, preprocessing_config = load_model(task, model_name)
     if bundle is None:
         return image, "**Model not yet loaded.**"
 
-    model = bundle["model"]
-    arch_type = _architecture_type(task, model_name)
-    architecture = TASK_MODELS.get(task, {}).get(model_name, {}).get("architecture", "")
-    image_tensor = preprocess_image(np.array(image), preprocessing_config, task=task)
+    architecture = bundle.get("architecture", "")
+    is_multimodal = bundle.get("is_multimodal", False)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    img_np = np.array(image)
 
-    if arch_type == "vit":
-        overlay, method = _apply_vit_gradcam(model, image_tensor, image, architecture=architecture)
+    vessel_tensor = None
+    metadata_tensor = None
+
+    if architecture == "efficientnet_vessel":
+        image_tensor, vessel_tensor = _preprocess_for_vessel_model(img_np)
+        vessel_tensor = vessel_tensor.to(device)
     else:
-        overlay, method = _apply_gradcam(model, image_tensor, image, model_name=model_name)
+        image_tensor = preprocess_image(img_np, preprocessing_config, task=task)
 
-    info = f"**Method:** {method}  \n**Model:** {model_name}  \n\n*Highlighted regions indicate areas most influential for the prediction.*"
+    image_tensor = image_tensor.to(device)
+
+    if is_multimodal:
+        metadata_encoder = bundle["metadata_encoder"]
+        age_val = float(age) if (age is not None and age != "") else 55.0
+        sex_int = int(sex) if (sex is not None and sex != "") else 0
+        if "gender" in metadata_encoder._continuous_cols:
+            row = {"age": age_val, "gender": float(sex_int)}
+        else:
+            sex_str = "Male" if sex_int == 1 else "Female"
+            row = {"age": age_val, "gender": sex_str}
+        metadata_tensor = metadata_encoder.encode(row).unsqueeze(0).to(device)
+
+    bundle["model"].to(device)
+    if bundle.get("metadata_head") is not None:
+        bundle["metadata_head"].to(device)
+    wrapper = _SaliencyWrapper(bundle, vessel_tensor=vessel_tensor, metadata_tensor=metadata_tensor)
+    wrapper.eval()
+
+    arch_type = _architecture_type(task, model_name)
+    if arch_type == "vit":
+        overlay, method = _apply_vit_gradcam(wrapper, image_tensor, image, architecture=architecture)
+    else:
+        overlay, method = _apply_gradcam(wrapper, image_tensor, image, model_name=model_name)
+
+    note = ""
+    if architecture == "efficientnet_vessel":
+        note = "  \n*Note: Heatmap reflects the image backbone only; vessel stream not visualised.*"
+    elif is_multimodal:
+        note = "  \n*Note: Heatmap reflects the image branch; metadata contribution not visualised.*"
+
+    info = f"**Method:** {method}  \n**Model:** {model_name}{note}  \n\n*Highlighted regions indicate areas most influential for the prediction.*"
     return overlay, info
-
 
 #  Model comparison 
 
 def compare_models(image, task, age, sex):
     if image is None:
         raise gr.Error("Please upload an image first.")
+    
+    # Metadata is now required because some models (multimodal) need it
+    if age is None or age == "":
+        raise gr.Error("Please enter the patient's age under 'Patient metadata'.")
+    if sex is None or sex == "":
+        raise gr.Error("Please select the patient's sex under 'Patient metadata'.")
 
     metadata = {}
     try:
-        if age is not None and age != "":
-            metadata["age"] = float(age)
-        if sex is not None and sex != "":
-            metadata["sex"] = int(sex)
+        metadata["age"] = float(age)
+        metadata["sex"] = int(sex)
     except ValueError as e:
         raise gr.Error(f"Invalid metadata input: {e}")
 
@@ -927,8 +1009,13 @@ def compare_models(image, task, age, sex):
             if bundle is None:
                 error_rows.append((name, "Model not yet loaded"))
                 continue
-            image_tensor = preprocess_image(img_array, preprocessing_config, task=task)
-            result = run_inference(bundle, image_tensor, metadata)
+            # Route vessel models through the dual-stream pipeline
+            if bundle.get("architecture") == "efficientnet_vessel":
+                image_tensor, vessel_tensor = _preprocess_for_vessel_model(img_array)
+                result = run_inference(bundle, image_tensor, metadata, vessel_tensor=vessel_tensor)
+            else:
+                image_tensor = preprocess_image(img_array, preprocessing_config, task=task)
+                result = run_inference(bundle, image_tensor, metadata)
             rows.append((name, _architecture_type(task, name).upper(), "Positive" if result["prediction"] == 1 else "Negative", result["probability"], result["confidence"]))
         except gr.Error:
             raise
@@ -1201,9 +1288,9 @@ def build_prediction_subtabs(task, session_history):
             with gr.Row():
                 with gr.Column(scale=1):
                     cmp_image = gr.Image(label="Retinal fundus image", type="pil", sources=["upload", "clipboard"], height=280)
-                    with gr.Accordion("Patient metadata (optional)", open=False):
-                        cmp_age = gr.Number(label="Age", precision=0)
-                        cmp_sex = gr.Dropdown(choices=[("Female", 0), ("Male", 1)], label="Sex", type="index")
+                    with gr.Accordion("Patient metadata (required)", open=True):
+                        cmp_age = gr.Number(label="Age *", precision=0, minimum=0, maximum=120)
+                        cmp_sex = gr.Dropdown(choices=[("Female", 0), ("Male", 1)], label="Sex *", type="index")
                     cmp_btn = gr.Button("Compare all models", variant="primary", elem_classes=btn_class)
                     cmp_clear_btn = gr.Button("Clear results", size="sm")
                 with gr.Column(scale=1):
@@ -1242,7 +1329,7 @@ def build_prediction_subtabs(task, session_history):
             sal_overlay_state = gr.State(None)
             sal_original_state = gr.State(None)
             sal_showing = gr.State(True)
-            sal_btn.click(fn=generate_saliency_and_store, inputs=[sal_image, task_state, sal_model], outputs=[sal_display, sal_info, sal_overlay_state, sal_original_state, sal_showing, sal_toggle])
+            sal_btn.click(fn=generate_saliency_and_store, inputs=[sal_image, task_state, sal_model, age_input, sex_input], outputs=[sal_display, sal_info, sal_overlay_state, sal_original_state, sal_showing, sal_toggle])
             sal_toggle.click(fn=toggle_saliency_view, inputs=[sal_showing, sal_overlay_state, sal_original_state], outputs=[sal_display, sal_showing, sal_toggle])
 
     components.update({
