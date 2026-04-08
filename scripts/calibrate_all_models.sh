@@ -5,10 +5,14 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-OUTPUTS_DIR="$PROJECT_ROOT/outputs"
+OUTPUTS_DIR="${1:-$PROJECT_ROOT/outputs}"
+
+# Convert OUTPUTS_DIR to an absolute path for cleaner path manipulation later
+OUTPUTS_DIR="$(cd "$OUTPUTS_DIR" && pwd)"
 
 echo "========================================================"
-echo " Starting Global Calibration for All Models in Outputs"
+echo " Starting Global Calibration for Models in: "
+echo " $OUTPUTS_DIR"
 echo "========================================================"
 
 # Find all val_predictions.csv files.
