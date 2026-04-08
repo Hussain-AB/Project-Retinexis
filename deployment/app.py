@@ -18,11 +18,20 @@ import torch
 import torch.nn as nn
 from PIL import Image
 from datetime import datetime
-from huggingface_hub import hf_hub_download
+from huggingface_hub import hf_hub_download, PyTorchModelHubMixin
 from src.models import create_model
 import base64
 import pandas as pd
+import timm
+from scipy import ndimage
+from skimage.morphology import disk
 
+# RRWNet segmentation imports
+_RRWNET_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "rrwnet")
+sys.path.insert(0, _RRWNET_DIR)
+from rrwnet.model import RRWNet as _RRWNetBase
+from rrwnet.preprocessing import enhance_image
+from rrwnet.utils import pad_images_unet, to_torch_tensors
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 gr.set_static_paths(paths=[os.path.join(_HERE, "images")])
@@ -34,11 +43,86 @@ gr.set_static_paths(paths=[os.path.join(_HERE, "images")])
 
 _MODEL_CACHE = {}
 
+# RRWNet segmentation model (lazy-loaded on first use)
+_RRWNET_MODEL = None
+
+
+class RRWNet(_RRWNetBase, PyTorchModelHubMixin):
+    """RRWNet wrapped with HuggingFace mixin for from_pretrained support."""
+    def __init__(self, input_ch=3, output_ch=3, base_ch=64, iterations=5):
+        super().__init__(input_ch, output_ch, base_ch, iterations)
+
+
+def _get_rrwnet():
+    """Lazy-load RRWNet from HuggingFace (j-morano/rrwnet-rite)."""
+    global _RRWNET_MODEL
+    if _RRWNET_MODEL is None:
+        print("[INFO] Loading RRWNet from HuggingFace (j-morano/rrwnet-rite)...")
+        _RRWNET_MODEL = RRWNet.from_pretrained("j-morano/rrwnet-rite", iterations=5)
+        _RRWNET_MODEL.eval()
+        print("[INFO] RRWNet loaded.")
+    return _RRWNET_MODEL
+
+
+def _generate_roi_mask(img: np.ndarray, threshold: int = 5) -> np.ndarray:
+    """Generate binary ROI mask from a retinal fundus image.
+    Thresholds the dark background and picks the largest connected component."""
+    gray = img.max(axis=2)
+    binary = (gray > threshold).astype(np.uint8)
+    filled = ndimage.binary_fill_holes(binary).astype(np.uint8)
+    labeled, n = ndimage.label(filled)
+    if n == 0:
+        return np.ones(gray.shape, dtype=np.uint8) * 255
+    sizes = ndimage.sum(filled, labeled, range(1, n + 1))
+    largest = int(np.argmax(sizes)) + 1
+    mask = (labeled == largest).astype(np.uint8)
+    return mask * 255
+
+
+def _rrwnet_segment_image(img_np: np.ndarray) -> np.ndarray:
+    """Run RRWNet on a raw retinal image and return a 3-channel vessel mask.
+    Input: numpy RGB image (H, W, 3) uint8
+    Output: numpy array (H, W, 3) float32 in [0, 1] — R=arteries, G=veins, B=vessels"""
+    model = _get_rrwnet()
+
+    # Generate ROI mask
+    roi_mask = _generate_roi_mask(img_np)
+
+    # Run enhance_image (the paper's preprocessing)
+    img_enhanced, mask = enhance_image(img_np, roi_mask)
+
+    # Pad to UNet-compatible size
+    imgs, paddings = pad_images_unet([img_enhanced, mask])
+    img_padded, padding = imgs[0], paddings[0]
+    mask_padded = np.stack([imgs[1]] * 3, axis=2)
+
+    tensors = to_torch_tensors([img_padded, mask_padded])
+    image_tensor = tensors[0].unsqueeze(0)
+    mask_tensor = tensors[1].unsqueeze(0)
+
+    with torch.no_grad():
+        predictions = model(image_tensor)
+        last_pred = torch.sigmoid(predictions[-1])
+        last_pred[mask_tensor < 0.5] = 0
+
+        # Remove padding
+        r, c = padding[0], padding[1]
+        if r[1] > 0 and c[1] > 0:
+            last_pred = last_pred[:, :, r[0]:-r[1], c[0]:-c[1]]
+        elif r[1] > 0:
+            last_pred = last_pred[:, :, r[0]:-r[1], :]
+        elif c[1] > 0:
+            last_pred = last_pred[:, :, :, c[0]:-c[1]]
+
+    # Convert to HWC numpy
+    vessel_mask = last_pred[0].permute(1, 2, 0).cpu().numpy().astype(np.float32)
+    return vessel_mask
+
 
 # ── Model & checkpoint configuration ────────────────────────────────────────
 
 TASK_MODELS = {
- "CVD Risk": {
+    "CVD Risk": {
         "RETFound-MAE": {
             "architecture": "retfound_mae",
             "variant": "default",
@@ -74,7 +158,6 @@ TASK_MODELS = {
         },
     },
     "Hypertension": {
-
         "RETFound-MAE": {
             "architecture": "retfound_mae",
             "variant": "default",
@@ -85,10 +168,15 @@ TASK_MODELS = {
             "variant": "large",
             "description": "General-purpose ViT — capacity-matched generalist",
         },
-        "EfficientNet-B2 (Multimodal segmentation)": {
-            "architecture": "efficientnet",
+        "EfficientNet-B2 (Vessel segmentation)": {
+            "architecture": "efficientnet_vessel",
             "variant": "b2",
-            "description": "EfficientNet + age/gender metadata",
+            "description": "Dual-stream: image + RRWNet vessel mask",
+        },
+        "EfficientNet-B2 (Vessel segmentation + Multimodal)": {
+            "architecture": "efficientnet_vessel",
+            "variant": "b2",
+            "description": "Dual-stream + age/gender metadata",
             "multimodal": True,
         },
         "DINOv2-Large (Multimodal)": {
@@ -115,9 +203,10 @@ HF_CHECKPOINTS = {
     "Hypertension": {
         "RETFound-MAE": "hypertension_combined/retfound_mae/best.pt",
         "DINOv2-Large": "hypertension_combined/dinov2/best.pt",
-        "EfficientNet-B2 (Multimodal segmentation)": "multimodal_models/hypertension_combined/efficientnet/best.pt",
         "DINOv2-Large (Multimodal)": "multimodal_models/hypertension_combined/dinov2/best.pt",
         "DINOv3-Large (Multimodal)": "multimodal_models/hypertension_combined/dinov3/best.pt",
+        "EfficientNet-B2 (Vessel segmentation)": "segmentation/hypertension_combined/efficientnet_vessel/best.pt",
+        "EfficientNet-B2 (Vessel segmentation + Multimodal)": "segmentation_multimodal/hypertension_combined/efficientnet_vessel/best.pt",
     },
 }
 
@@ -127,6 +216,10 @@ HF_TEMPERATURES = {
     "Hypertension": {
         "RETFound-MAE": "hypertension_combined/retfound_mae/temperature.json",
         "DINOv2-Large": "hypertension_combined/dinov2/temperature.json",
+        "EfficientNet-B2 (Vessel segmentation)": "segmentation/hypertension_combined/efficientnet_vessel/temperature.json",
+        "EfficientNet-B2 (Vessel segmentation + Multimodal)": "segmentation_multimodal/hypertension_combined/efficientnet_vessel/temperature.json",
+        "DINOv2-Large (Multimodal)": "multimodal_models/hypertension_combined/dinov2/temperature.json",
+        "DINOv3-Large (Multimodal)": "multimodal_models/hypertension_combined/dinov3/temperature.json",
     },
 }
 
@@ -163,7 +256,9 @@ def load_model(task: str, model_name: str):
     variant = model_info.get("variant")
     is_multimodal = model_info.get("multimodal", False)
 
-    if variant and variant != "default":
+    if architecture == "efficientnet_vessel":
+        model = EfficientNetVesselClassifier(variant=variant or "b2", pretrained=False)
+    elif variant and variant != "default":
         model = create_model(architecture, variant=variant, pretrained=False)
     else:
         model = create_model(architecture, pretrained=False)
@@ -213,18 +308,24 @@ def load_model(task: str, model_name: str):
         except Exception as e:
             print(f"[WARN] Could not load temperature for {model_name}: {e}")
 
+    # Get preprocessing config (vessel model builds its own since it lacks the property)
+    if architecture == "efficientnet_vessel":
+        preprocessing_config = None  # vessel preprocessing is hard-coded, no config needed
+    else:
+        preprocessing_config = model.preprocessing_config
+
     bundle = {
         "model": model,
-        "preprocessing_config": model.preprocessing_config,
+        "preprocessing_config": preprocessing_config,
         "metadata_head": metadata_head,
         "metadata_encoder": metadata_encoder,
         "is_multimodal": is_multimodal,
         "temperature": temperature,
+        "architecture": architecture,
     }
     _MODEL_CACHE[cache_key] = bundle
-    return bundle, model.preprocessing_config
-
-# Task-specific preprocessing helpers 
+    return bundle, preprocessing_config
+    # Task-specific preprocessing helpers 
 
 def _remove_top_left_overlay_cimt(img, width=90, height=50, white_threshold=200):
     """CIMT: Remove text overlay from top-left corner (matches training)."""
@@ -291,6 +392,72 @@ def _clahe_htn(img_bgr):
     return cv2.cvtColor(lab_enhanced, cv2.COLOR_LAB2BGR)
 
 # Multimodal helpers (for models that fuse image features + patient metadata)
+
+# ── EfficientNet-Vessel: dual-backbone model for segmentation inference ─────
+
+class EfficientNetVesselClassifier(nn.Module):
+    """Dual-stream: EfficientNet-B2 (image) + EfficientNet-B0 (vessel mask).
+    Features are concatenated → Linear(2688, 1)."""
+
+    def __init__(self, variant: str = "b2", pretrained: bool = False, drop_rate: float = 0.3):
+        super().__init__()
+        # Image backbone (B2, 1408 features)
+        self._image_backbone = timm.create_model(
+            f"tf_efficientnet_{variant}",
+            pretrained=pretrained,
+            num_classes=0,
+            drop_rate=drop_rate,
+        )
+        self._img_feature_dim = 1408
+
+        # Vessel backbone (B0, 1280 features)
+        self._vessel_backbone = timm.create_model(
+            "tf_efficientnet_b0",
+            pretrained=pretrained,
+            num_classes=0,
+            drop_rate=drop_rate,
+        )
+        self._vessel_feature_dim = 1280
+
+        self._feature_dim = self._img_feature_dim + self._vessel_feature_dim  # 2688
+        self._head = nn.Linear(self._feature_dim, 1)
+        self._input_size = 260
+
+    def forward(self, x, vessel_mask):
+        img_feat = self._image_backbone(x)
+        vessel_feat = self._vessel_backbone(vessel_mask)
+        combined = torch.cat([img_feat, vessel_feat], dim=1)
+        return self._head(combined)
+
+    def get_features(self, x, vessel_mask):
+        """Return concatenated features (2688-dim) for multimodal fusion."""
+        img_feat = self._image_backbone(x)
+        vessel_feat = self._vessel_backbone(vessel_mask)
+        return torch.cat([img_feat, vessel_feat], dim=1)
+
+
+def _pad_to_square(img: np.ndarray) -> np.ndarray:
+    """Pad the shorter side of an (H, W, C) numpy array with black to make it square."""
+    h, w = img.shape[:2]
+    if h == w:
+        return img
+    max_side = max(h, w)
+    pad_h_top = (max_side - h) // 2
+    pad_h_bot = max_side - h - pad_h_top
+    pad_w_left = (max_side - w) // 2
+    pad_w_right = max_side - w - pad_w_left
+    return np.pad(
+        img,
+        ((pad_h_top, pad_h_bot), (pad_w_left, pad_w_right), (0, 0)),
+        mode="constant",
+        constant_values=0,
+    )
+
+
+
+
+
+
 
 class MetadataEncoder:
     """Replicates src/data/base_dataset.py::MetadataEncoder for inference.
@@ -378,7 +545,7 @@ def preprocess_image(image: np.ndarray, preprocessing_config, task=None) -> torc
     return tensor
 
 
-def run_inference(bundle, image_tensor, metadata: dict | None = None) -> dict:
+def run_inference(bundle, image_tensor, metadata: dict | None = None, vessel_tensor=None) -> dict:
     """Run model inference. Handles both image-only and multimodal models."""
     if bundle is None:
         raise gr.Error("Model could not be loaded. Please try a different model or check your connection.")
@@ -392,6 +559,39 @@ def run_inference(bundle, image_tensor, metadata: dict | None = None) -> dict:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = model.to(device)
     image_tensor = image_tensor.to(device)
+
+    # Handle vessel segmentation models (dual input)
+    if vessel_tensor is not None:
+        vessel_tensor = vessel_tensor.to(device)
+        with torch.no_grad():
+            if is_multimodal:
+                # Vessel + metadata fusion
+                if not metadata or "age" not in metadata or "sex" not in metadata:
+                    raise gr.Error(
+                        "This model requires patient metadata (age and sex). "
+                        "Please fill in both fields under 'Patient metadata'."
+                    )
+                sex_str = "Male" if int(metadata["sex"]) == 1 else "Female"
+                row = {"age": float(metadata["age"]), "gender": sex_str}
+                metadata_tensor = metadata_encoder.encode(row).unsqueeze(0).to(device)
+                metadata_head.to(device)
+
+                # Get combined image+vessel features (2688-dim)
+                features = model.get_features(image_tensor, vessel_tensor)
+                combined = torch.cat([features, metadata_tensor], dim=1)
+                logits = metadata_head(combined)
+            else:
+                # Vessel only (no metadata)
+                logits = model(image_tensor, vessel_tensor)
+
+        temperature = bundle.get("temperature", 1.0)
+        logits = logits / temperature
+        prob = torch.sigmoid(logits).item()
+        return {
+            "probability": prob,
+            "prediction": int(prob > 0.5),
+            "confidence": abs(prob - 0.5) * 2,
+        }
 
     with torch.no_grad():
         if is_multimodal:
@@ -424,6 +624,40 @@ def run_inference(bundle, image_tensor, metadata: dict | None = None) -> dict:
         "confidence": abs(prob - 0.5) * 2,
     }
 
+def _preprocess_for_vessel_model(img_np: np.ndarray):
+    """Preprocess image for EfficientNet-Vessel: produces (image_tensor, vessel_tensor).
+    
+    Image branch:  pad_to_square → resize 260 → ImageNet normalize
+    Vessel branch: pad_to_square → resize 260 → mean=0.5 std=0.5 normalize
+    """
+    INPUT_SIZE = 260
+    IMAGENET_MEAN = [0.485, 0.456, 0.406]
+    IMAGENET_STD = [0.229, 0.224, 0.225]
+
+    # Step 1: Generate vessel mask using RRWNet (from raw image)
+    vessel_mask = _rrwnet_segment_image(img_np)  # (H, W, 3) float32 [0, 1]
+
+    # Step 2: Image branch preprocessing
+    img_padded = _pad_to_square(img_np)
+    img_resized = cv2.resize(img_padded, (INPUT_SIZE, INPUT_SIZE), interpolation=cv2.INTER_CUBIC)
+    img_float = img_resized.astype(np.float32) / 255.0
+    img_normed = (img_float - np.array(IMAGENET_MEAN)) / np.array(IMAGENET_STD)
+    image_tensor = torch.from_numpy(img_normed).permute(2, 0, 1).unsqueeze(0).float()
+
+    # Step 3: Vessel branch preprocessing  
+    vessel_padded = _pad_to_square(vessel_mask)
+    vessel_resized = cv2.resize(vessel_padded, (INPUT_SIZE, INPUT_SIZE), interpolation=cv2.INTER_CUBIC)
+    vessel_normed = (vessel_resized - 0.5) / 0.5  # [0,1] → [-1,1]
+    vessel_tensor = torch.from_numpy(vessel_normed).permute(2, 0, 1).unsqueeze(0).float()
+
+    return image_tensor, vessel_tensor
+
+
+
+
+
+
+
 
 # Main prediction handler
 def predict(image, task, model_name, age, sex):
@@ -440,8 +674,15 @@ def predict(image, task, model_name, age, sex):
         metadata["sex"] = int(sex)
 
     bundle, preprocessing_config = load_model(task, model_name)
-    image_tensor = preprocess_image(np.array(image), preprocessing_config, task=task)
-    result = run_inference(bundle, image_tensor, metadata)
+
+    # Route vessel models through a different preprocessing pipeline
+    if bundle.get("architecture") == "efficientnet_vessel":
+        img_np = np.array(image)
+        image_tensor, vessel_tensor = _preprocess_for_vessel_model(img_np)
+        result = run_inference(bundle, image_tensor, metadata, vessel_tensor=vessel_tensor)
+    else:
+        image_tensor = preprocess_image(np.array(image), preprocessing_config, task=task)
+        result = run_inference(bundle, image_tensor, metadata)
 
     prob = result["probability"]
     pred = result["prediction"]
