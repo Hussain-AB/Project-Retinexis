@@ -9,7 +9,9 @@ set -e
 REPO_DIR="/home/x_albeshh/Project-Retinexis"
 CONFIG_DIR="tasks/cimt/configs/phase2"
 
-configs=(${REPO_DIR}/${CONFIG_DIR}/*.yaml)
+configs=(
+    ${REPO_DIR}/${CONFIG_DIR}/dinov2_large_phase2.yaml
+)
 
 if [ ${#configs[@]} -eq 0 ]; then
     echo "No YAML configs found in ${CONFIG_DIR}/"
@@ -32,14 +34,16 @@ for config_path in "${configs[@]}"; do
     sbatch <<EOF
 #!/bin/bash
 #SBATCH --job-name=phase2_${model_name}
-#SBATCH --array=0-4
+#SBATCH --array=4
 #SBATCH --output=${LOG_DIR}/%x_%A_%a.out
 #SBATCH --error=${LOG_DIR}/%x_%A_%a.err
 #SBATCH --nodes=1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
 #SBATCH --gres=gpu:a100:1
-#SBATCH --time=24:00:00
+#SBATCH --time=3:00:00
+#SBATCH --mail-type=ALL
+#SBATCH --mail-user=halbeshri@sdm.sa
 
 set -e
 

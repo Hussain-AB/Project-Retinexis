@@ -10,10 +10,7 @@ REPO_DIR="/home/x_albeshh/Project-Retinexis"
 CONFIG_DIR="tasks/cimt/configs/multimodal"
 
 configs=(
-
-    ${REPO_DIR}/${CONFIG_DIR}/efficientnet_b2_multimodal.yaml
-    ${REPO_DIR}/${CONFIG_DIR}/convnextv2_multimodal.yaml    
-
+    ${REPO_DIR}/${CONFIG_DIR}/dinov2_large_multimodal.yaml
 )
 
 if [ ${#configs[@]} -eq 0 ]; then
@@ -54,7 +51,9 @@ for config_path in "${configs[@]}"; do
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
 #SBATCH --gres=gpu:a100:1
-#SBATCH --time=4:00:00
+#SBATCH --time=6:00:00
+#SBATCH --mail-type=ALL
+#SBATCH --mail-user=halbeshri@sdm.sa
 
 set -e
 
