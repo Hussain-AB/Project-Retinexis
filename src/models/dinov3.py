@@ -29,6 +29,13 @@ _DINOV3_FALLBACK_STD = (0.229, 0.224, 0.225)
 VARIANT_CONFIG = {
     "large": {
         "model_id": _DINOV3_LARGE_MODEL_ID,
+        # ViT-Large/16 architecture dims — required when pretrained=False so the
+        # local config skeleton matches the trained checkpoint (hidden 1024, 24 layers).
+        "hidden_size": 1024,
+        "num_hidden_layers": 24,
+        "num_attention_heads": 16,
+        "intermediate_size": 4096,
+        "patch_size": 16,
     },
 }
 
@@ -79,6 +86,11 @@ class DINOv3Classifier(BaseClassifier):
             model_id=config["model_id"],
             pretrained=pretrained,
             input_size=self._input_size,
+            hidden_size=config.get("hidden_size"),
+            num_hidden_layers=config.get("num_hidden_layers"),
+            num_attention_heads=config.get("num_attention_heads"),
+            intermediate_size=config.get("intermediate_size"),
+            patch_size=config.get("patch_size"),
         )
         self._feature_dim = self._backbone.config.hidden_size
 
@@ -87,13 +99,34 @@ class DINOv3Classifier(BaseClassifier):
         # review: removed auto linear_probe — trainer owns mode switching
 
     @staticmethod
-    def _load_backbone(model_id: str, pretrained: bool, input_size: int) -> nn.Module:
+    def _load_backbone(
+        model_id: str,
+        pretrained: bool,
+        input_size: int,
+        hidden_size: int | None = None,
+        num_hidden_layers: int | None = None,
+        num_attention_heads: int | None = None,
+        intermediate_size: int | None = None,
+        patch_size: int | None = None,
+    ) -> nn.Module:
         if pretrained:
             return AutoModel.from_pretrained(model_id)
         # review: build config locally for pretrained=False to avoid gated
         # repo access from AutoConfig.from_pretrained(model_id).
+        # Pass explicit architecture dims so the skeleton matches the checkpoint
+        # (e.g. large variant needs hidden_size=1024, not the default base 768).
         hf_config = AutoConfig.for_model(_DINOV3_FALLBACK_MODEL_TYPE)
         hf_config.image_size = input_size
+        if hidden_size is not None:
+            hf_config.hidden_size = hidden_size
+        if num_hidden_layers is not None:
+            hf_config.num_hidden_layers = num_hidden_layers
+        if num_attention_heads is not None:
+            hf_config.num_attention_heads = num_attention_heads
+        if intermediate_size is not None:
+            hf_config.intermediate_size = intermediate_size
+        if patch_size is not None:
+            hf_config.patch_size = patch_size
         return AutoModel.from_config(hf_config)
 
     def _encode(self, x: torch.Tensor) -> torch.Tensor:
