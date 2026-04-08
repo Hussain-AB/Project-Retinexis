@@ -60,8 +60,7 @@ class TestTaskConfiguration:
         assert "Hypertension" in HF_CHECKPOINTS
 
     def test_hypertension_has_real_models(self):
-        """Hypertension should have at least the 3 image-only models with real checkpoints."""
-        assert "EfficientNet-B2" in HF_CHECKPOINTS["Hypertension"]
+        """Hypertension should have at least the 2 image-only models with real checkpoints."""
         assert "RETFound-MAE" in HF_CHECKPOINTS["Hypertension"]
         assert "DINOv2-Large" in HF_CHECKPOINTS["Hypertension"]
 
@@ -102,7 +101,7 @@ class TestModelChoices:
         choices = get_model_choices("Hypertension")
         assert isinstance(choices, list)
         assert len(choices) > 0
-        assert "EfficientNet-B2" in choices
+        assert "DINOv2-Large" in choices
 
     def test_get_model_choices_cvd(self):
         choices = get_model_choices("CVD Risk")
@@ -115,7 +114,7 @@ class TestModelChoices:
         assert get_model_choices("FakeTask") == []
 
     def test_get_model_description_valid(self):
-        desc = get_model_description("Hypertension", "EfficientNet-B2")
+        desc = get_model_description("Hypertension", "DINOv2-Large")
         assert isinstance(desc, str)
         assert len(desc) > 0
 

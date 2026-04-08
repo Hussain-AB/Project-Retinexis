@@ -74,11 +74,7 @@ TASK_MODELS = {
         },
     },
     "Hypertension": {
-        "EfficientNet-B2": {
-            "architecture": "efficientnet",
-            "variant": "b2",
-            "description": "CNN baseline — lightweight and fast",
-        },
+
         "RETFound-MAE": {
             "architecture": "retfound_mae",
             "variant": "default",
@@ -117,12 +113,20 @@ HF_CHECKPOINTS = {
         "EfficientNet-B2": "cimt/efficientnet/best.pt",
     },
     "Hypertension": {
-        "EfficientNet-B2": "hypertension_combined/efficientnet/best.pt",
         "RETFound-MAE": "hypertension_combined/retfound_mae/best.pt",
         "DINOv2-Large": "hypertension_combined/dinov2/best.pt",
         "EfficientNet-B2 (Multimodal segmentation)": "multimodal_models/hypertension_combined/efficientnet/best.pt",
         "DINOv2-Large (Multimodal)": "multimodal_models/hypertension_combined/dinov2/best.pt",
         "DINOv3-Large (Multimodal)": "multimodal_models/hypertension_combined/dinov3/best.pt",
+    },
+}
+
+
+# Temperature calibration files (optional — models without a file get T=1.0)
+HF_TEMPERATURES = {
+    "Hypertension": {
+        "RETFound-MAE": "hypertension_combined/retfound_mae/temperature.json",
+        "DINOv2-Large": "hypertension_combined/dinov2/temperature.json",
     },
 }
 
@@ -192,12 +196,30 @@ def load_model(task: str, model_name: str):
         metadata_head.eval()
         metadata_encoder = MetadataEncoder.from_dict(checkpoint["metadata_encoder"])
 
+    # Load temperature calibration if available (defaults to 1.0 = no change)
+    temperature = 1.0
+    temp_path = HF_TEMPERATURES.get(task, {}).get(model_name)
+    if temp_path:
+        try:
+            temp_file = hf_hub_download(
+                repo_id="Faisasa12/Project-Retinexis",
+                filename=temp_path,
+                token=os.environ.get("HF_TOKEN"),
+            )
+            with open(temp_file) as f:
+                temp_data = json.load(f)
+                temperature = float(temp_data.get("temperature", 1.0))
+            print(f"[INFO] Loaded temperature T={temperature:.4f} for {model_name}")
+        except Exception as e:
+            print(f"[WARN] Could not load temperature for {model_name}: {e}")
+
     bundle = {
         "model": model,
         "preprocessing_config": model.preprocessing_config,
         "metadata_head": metadata_head,
         "metadata_encoder": metadata_encoder,
         "is_multimodal": is_multimodal,
+        "temperature": temperature,
     }
     _MODEL_CACHE[cache_key] = bundle
     return bundle, model.preprocessing_config
@@ -392,6 +414,9 @@ def run_inference(bundle, image_tensor, metadata: dict | None = None) -> dict:
         else:
             logits = model(image_tensor)
 
+    # Apply temperature calibration (T=1.0 means no change)
+    temperature = bundle.get("temperature", 1.0)
+    logits = logits / temperature
     prob = torch.sigmoid(logits).item()
     return {
         "probability": prob,
