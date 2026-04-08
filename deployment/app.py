@@ -122,32 +122,32 @@ def _rrwnet_segment_image(img_np: np.ndarray) -> np.ndarray:
 # ── Model & checkpoint configuration ────────────────────────────────────────
 
 TASK_MODELS = {
-    "CVD Risk": {
-        "RETFound-MAE": {
-            "architecture": "retfound_mae",
+      "CVD Risk": {
+        "RETFound-DINOv2": {
+            "architecture": "retfound_dinov2",
             "variant": "default",
-            "description": "Retinal specialist — top performer on CVD risk",
+            "description": "Retinal specialist — RETFound backbone with DINOv2",
         },
-        "ConvNeXt V2-Base": {
-            "architecture": "convnextv2",
-            "variant": "convnextv2_base",
-            "description": "Modern CNN — second best on CVD risk",
+        "DINOv3-Large": {
+            "architecture": "dinov3",
+            "variant": "large",
+            "description": "General-purpose ViT — strong baseline",
         },
-        "EfficientNet-B2": {
-            "architecture": "efficientnet",
+        "EfficientNet-B2 (Vessel segmentation)": {
+            "architecture": "efficientnet_vessel",
             "variant": "b2",
-            "description": "CNN baseline — lightweight and fast",
+            "description": "Dual-stream: image + RRWNet vessel mask",
         },
-        "EfficientNet-B2 (Multimodal segmentation)": {
-            "architecture": "efficientnet",
+        "EfficientNet-B2 (Vessel segmentation + Multimodal)": {
+            "architecture": "efficientnet_vessel",
             "variant": "b2",
-            "description": "EfficientNet + age/gender metadata",
+            "description": "Dual-stream + age/gender metadata",
             "multimodal": True,
         },
-        "DINOv2-Large (Multimodal)": {
-            "architecture": "dinov2",
-            "variant": "large",
-            "description": "DINOv2 + age/gender metadata",
+        "RETFound-DINOv2 (Multimodal)": {
+            "architecture": "retfound_dinov2",
+            "variant": "default",
+            "description": "RETFound-DINOv2 + age/gender metadata",
             "multimodal": True,
         },
         "DINOv3-Large (Multimodal)": {
@@ -196,9 +196,12 @@ TASK_MODELS = {
 
 HF_CHECKPOINTS = {
     "CVD Risk": {
-        "RETFound-MAE": "cimt/retfound_mae/best.pt",
-        "ConvNeXt V2-Base": "cimt/convnextv2/best.pt",
-        "EfficientNet-B2": "cimt/efficientnet/best.pt",
+        "RETFound-DINOv2": "cimt/retfound_dinov2/best.pt",
+        "DINOv3-Large": "cimt/dinov3/best.pt",
+        "EfficientNet-B2 (Vessel segmentation)": "segmentation/cimt/efficientnet_vessel/best.pt",
+        "EfficientNet-B2 (Vessel segmentation + Multimodal)": "segmentation_multimodal/cimt/efficientnet_vessel/best.pt",
+        "RETFound-DINOv2 (Multimodal)": "multimodal_models/cimt/retfound_dinov2/best.pt",
+        "DINOv3-Large (Multimodal)": "multimodal_models/cimt/dinov3/best.pt",
     },
     "Hypertension": {
         "RETFound-MAE": "hypertension_combined/retfound_mae/best.pt",
@@ -208,11 +211,19 @@ HF_CHECKPOINTS = {
         "EfficientNet-B2 (Vessel segmentation)": "segmentation/hypertension_combined/efficientnet_vessel/best.pt",
         "EfficientNet-B2 (Vessel segmentation + Multimodal)": "segmentation_multimodal/hypertension_combined/efficientnet_vessel/best.pt",
     },
-}
+} 
 
 
 # Temperature calibration files (optional — models without a file get T=1.0)
 HF_TEMPERATURES = {
+    "CVD Risk": {
+        "RETFound-DINOv2": "cimt/retfound_dinov2/temperature.json",
+        "DINOv3-Large": "cimt/dinov3/temperature.json",
+        "EfficientNet-B2 (Vessel segmentation)": "segmentation/cimt/efficientnet_vessel/temperature.json",
+        "EfficientNet-B2 (Vessel segmentation + Multimodal)": "segmentation_multimodal/cimt/efficientnet_vessel/temperature.json",
+        "RETFound-DINOv2 (Multimodal)": "multimodal_models/cimt/retfound_dinov2/temperature.json",
+        "DINOv3-Large (Multimodal)": "multimodal_models/cimt/dinov3/temperature.json",
+    },
     "Hypertension": {
         "RETFound-MAE": "hypertension_combined/retfound_mae/temperature.json",
         "DINOv2-Large": "hypertension_combined/dinov2/temperature.json",
@@ -549,7 +560,6 @@ def run_inference(bundle, image_tensor, metadata: dict | None = None, vessel_ten
     """Run model inference. Handles both image-only and multimodal models."""
     if bundle is None:
         raise gr.Error("Model could not be loaded. Please try a different model or check your connection.")
-        
 
     model = bundle["model"]
     is_multimodal = bundle["is_multimodal"]
@@ -571,8 +581,15 @@ def run_inference(bundle, image_tensor, metadata: dict | None = None, vessel_ten
                         "This model requires patient metadata (age and sex). "
                         "Please fill in both fields under 'Patient metadata'."
                     )
-                sex_str = "Male" if int(metadata["sex"]) == 1 else "Female"
-                row = {"age": float(metadata["age"]), "gender": sex_str}
+                # Build row using the encoder's actual column names.
+                # Hypertension: gender is categorical ('Male'/'Female').
+                # CIMT: gender is continuous numeric (0/1).
+                sex_int = int(metadata["sex"])  # UI sends 0=Female, 1=Male
+                if "gender" in metadata_encoder._continuous_cols:
+                    row = {"age": float(metadata["age"]), "gender": float(sex_int)}
+                else:
+                    sex_str = "Male" if sex_int == 1 else "Female"
+                    row = {"age": float(metadata["age"]), "gender": sex_str}
                 metadata_tensor = metadata_encoder.encode(row).unsqueeze(0).to(device)
                 metadata_head.to(device)
 
@@ -593,20 +610,25 @@ def run_inference(bundle, image_tensor, metadata: dict | None = None, vessel_ten
             "confidence": abs(prob - 0.5) * 2,
         }
 
+    # Handle image-only models (with optional metadata)
     with torch.no_grad():
         if is_multimodal:
-            # Validate metadata is provided
             if not metadata or "age" not in metadata or "sex" not in metadata:
                 raise gr.Error(
-                    f"This model requires patient metadata (age and sex). "
-                    f"Please fill in both fields under 'Patient metadata'."
+                    "This model requires patient metadata (age and sex). "
+                    "Please fill in both fields under 'Patient metadata'."
                 )
-            # Encode metadata: convert UI's sex (0/1) to the encoder's labels ('Female'/'Male')
-            sex_str = "Male" if int(metadata["sex"]) == 1 else "Female"
-            row = {"age": float(metadata["age"]), "gender": sex_str}
+            # Build row using the encoder's actual column names.
+            # Hypertension: gender is categorical ('Male'/'Female').
+            # CIMT: gender is continuous numeric (0/1).
+            sex_int = int(metadata["sex"])  # UI sends 0=Female, 1=Male
+            if "gender" in metadata_encoder._continuous_cols:
+                row = {"age": float(metadata["age"]), "gender": float(sex_int)}
+            else:
+                sex_str = "Male" if sex_int == 1 else "Female"
+                row = {"age": float(metadata["age"]), "gender": sex_str}
             metadata_tensor = metadata_encoder.encode(row).unsqueeze(0).to(device)
 
-            # Forward: features → concat → metadata_head
             metadata_head.to(device)
             features = model.get_features(image_tensor)
             combined = torch.cat([features, metadata_tensor], dim=1)
