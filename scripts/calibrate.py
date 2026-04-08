@@ -33,10 +33,10 @@ class TemperatureScaler(nn.Module):
 
     def forward(self, logits: torch.Tensor) -> torch.Tensor:
         return logits / self.temperature
-
+    
 
 # the original logits is not saved, only the probablities are saved
-# so we run the signmoid in reverse to get back original numbers
+# so we run the signmoid in reverse to get back original numbers 
 def get_logits_from_probs(probs: torch.Tensor) -> torch.Tensor:
     """Inverse sigmoid to recover raw logits from 0-1 probabilities."""
     probs = torch.clamp(probs, 1e-7, 1 - 1e-7) # avoid dividing by zero crash
@@ -69,7 +69,7 @@ def calibrate_fold(predictions_csv_path: Path) -> float:
         loss = criterion(scaled_logits, labels)
         loss.backward()
         return loss
-
+    
     optimiser.step(eval_loss)
 
     optimal_t = scaler.temperature.item()
@@ -87,7 +87,7 @@ def main():
 
 
     prediction_files = list(run_dir.rglob("val_predictions.csv"))
-
+    
     if not prediction_files:
         print("No val_predictions.csv files found. Did Phase 2 finish?")
         return
@@ -101,12 +101,9 @@ def main():
 
         print(f"  Calibrating {fold_name}...")
         optimal_t = calibrate_fold(csv_path)
-
+        
         print(f"    Optimal Temperature (T): {optimal_t:.4f}")
         calibration_results[fold_name] = optimal_t
-        
-        calibrated_probs = torch.sigmoid(logits / optimal_t)
-        # compute ECE on calibrated_probs vs labels
 
         # Save T locally in that fold's prediction folder
         t_path = csv_path.parent / "temperature.json"
@@ -116,7 +113,7 @@ def main():
     summary_path = run_dir / "calibration_summary.json"
     with open(summary_path, "w") as f:
         json.dump(calibration_results, f, indent=4)
-
+        
     print(f"\nCalibration complete! Summary saved to {summary_path}")
 
 
