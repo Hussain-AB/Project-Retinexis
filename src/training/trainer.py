@@ -109,10 +109,12 @@ class Trainer:
         print(f"    Labels CSV: {config.labels_csv}")
         print(f"    Splits:     {config.splits_file} (fold {config.fold})")
         print(f"    Image dir:  {config.data_dir}")
-        self.train_loader, self.val_loader, self.metadata_encoder = \
-            create_dataloaders(config, model, batch_size=config.phase1_batch_size)
-        print(f"    Train: {len(self.train_loader.dataset)} samples ({len(self.train_loader)} batches)")
-        print(f"    Val:   {len(self.val_loader.dataset)} samples ({len(self.val_loader)} batches)")
+        (self.train_loader, self.inner_val_loader, self.val_loader,
+         self.metadata_encoder) = create_dataloaders(
+            config, model, batch_size=config.phase1_batch_size)
+        print(f"    Train:     {len(self.train_loader.dataset)} samples ({len(self.train_loader)} batches)")
+        print(f"    Inner val: {len(self.inner_val_loader.dataset)} samples ({len(self.inner_val_loader)} batches)")
+        print(f"    Val:       {len(self.val_loader.dataset)} samples ({len(self.val_loader)} batches)")
 
         # Metadata head (only when use_metadata=True)
         # Lives on the trainer, not the model. model.head is bypassed
@@ -297,8 +299,8 @@ class Trainer:
 
         self.model.set_finetune_mode()
 
-        self.train_loader, self.val_loader = rebuild_loaders(
-            self.train_loader, self.val_loader,
+        self.train_loader, self.inner_val_loader, self.val_loader = rebuild_loaders(
+            self.train_loader, self.inner_val_loader, self.val_loader,
             batch_size=config.phase2_batch_size, config=config,
         )
 

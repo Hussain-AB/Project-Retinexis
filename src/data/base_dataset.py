@@ -61,7 +61,9 @@ class SampleDict(TypedDict, total=False):
     vessel_mask: torch.Tensor   # (3, H, W) — only present when use_vessel_masks=True
     metadata: torch.Tensor      # (D,) — only present when use_metadata=True
     label: torch.Tensor         # (1,)
+    sample_id: str              # image-level ID; written to every predictions CSV
     patient_id: str
+    source_dataset: str         # origin cohort, e.g. "brset" / "odir" / "cimt"
     image_path: str
 
 
@@ -223,6 +225,9 @@ class BaseRetinalDataset(Dataset, ABC):
         transform: callable,
         label_col: str = "label",
         patient_id_col: str = "patient_id",
+        sample_id_col: str = "image_id",
+        source_col: str | None = None,
+        source_default: str = "unknown",
         metadata_encoder: MetadataEncoder | None = None,
         vessel_mask_dir: str | None = None,
         vessel_transform: callable | None = None,
@@ -257,6 +262,9 @@ class BaseRetinalDataset(Dataset, ABC):
         self.transform = transform
         self.label_col = label_col
         self.patient_id_col = patient_id_col
+        self.sample_id_col = sample_id_col
+        self.source_col = source_col
+        self.source_default = source_default
         self.metadata_encoder = metadata_encoder
         self.vessel_mask_dir = Path(vessel_mask_dir) if vessel_mask_dir else None
         self.vessel_transform = vessel_transform
@@ -272,6 +280,33 @@ class BaseRetinalDataset(Dataset, ABC):
                 f"patient_id_col '{self.patient_id_col}' not found in DataFrame. "
                 f"Available: {list(self.df.columns)}"
             )
+        # sample_id is what links a prediction row back to an image, an
+        # attribution map and a cohort. Without it val_predictions.csv cannot be
+        # joined to anything.
+        if self.sample_id_col not in self.df.columns:
+            raise ValueError(
+                f"sample_id_col '{self.sample_id_col}' not found in DataFrame. "
+                f"Available: {list(self.df.columns)}"
+            )
+        if self.source_col is not None and self.source_col not in self.df.columns:
+            raise ValueError(
+                f"source_col '{self.source_col}' not found in DataFrame. "
+                f"Available: {list(self.df.columns)}"
+            )
+
+    def _identity_fields(self, row) -> dict:
+        """sample_id / patient_id / source_dataset for one row.
+
+        Shared by every subclass so the predictions CSV schema is identical
+        across datasets.
+        """
+        return {
+            "sample_id": str(row[self.sample_id_col]),
+            "patient_id": str(row[self.patient_id_col]),
+            "source_dataset": (
+                str(row[self.source_col]) if self.source_col else self.source_default
+            ),
+        }
 
     @abstractmethod
     def __getitem__(self, idx: int) -> SampleDict:

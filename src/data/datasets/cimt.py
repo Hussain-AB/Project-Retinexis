@@ -20,8 +20,8 @@ class CIMTDataset(BaseRetinalDataset):
         sample: SampleDict = {
             "image": image,
             "label": torch.tensor([float(row[self.label_col])], dtype=torch.float32),
-            "patient_id": str(row[self.patient_id_col]),
             "image_path": str(image_path),
+            **self._identity_fields(row),
         }
 
         if self.vessel_mask_dir is not None and self.vessel_transform is not None:

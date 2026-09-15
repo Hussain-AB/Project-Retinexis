@@ -34,9 +34,16 @@ class HypertensionDataset(BaseRetinalDataset):
         sample: SampleDict = {
             "image": image,
             "label": torch.tensor([float(row[self.label_col])], dtype=torch.float32),
-            "patient_id": str(row[self.patient_id_col]),
             "image_path": str(image_path),
+            **self._identity_fields(row),
         }
+
+        # RRWNet masks mirror the image layout (brset/<f>.jpg, odir/<f>.jpg),
+        # so the same relative path resolves under vessel_mask_dir.
+        if self.vessel_mask_dir is not None and self.vessel_transform is not None:
+            vessel_path = self.vessel_mask_dir / rel_path
+            vessel_mask = Image.open(vessel_path).convert("RGB")
+            sample["vessel_mask"] = self.vessel_transform(vessel_mask)
 
         if self.metadata_encoder is not None:
             sample["metadata"] = self.metadata_encoder.encode(row)
