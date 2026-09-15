@@ -37,7 +37,16 @@ def held_out_rows(cfg, fold: int, project_root: Path = PROJECT_ROOT) -> pd.DataF
         splits = json.load(f)
 
     entry = splits["folds"][fold]
-    val_ids = entry.get("val") or entry.get("val_ids") or entry.get("validation")
+    # "val_sample_ids" is what src/data/splits.py actually writes; the other
+    # spellings are kept for any hand-made splits file. Without the first key
+    # every xai entry point raised KeyError, so nothing in this package had ever
+    # run against a real splits file.
+    val_ids = (
+        entry.get("val_sample_ids")
+        or entry.get("val")
+        or entry.get("val_ids")
+        or entry.get("validation")
+    )
     if val_ids is None:
         raise KeyError(f"No val id list in fold {fold} of {splits_file}; keys={list(entry)}")
 

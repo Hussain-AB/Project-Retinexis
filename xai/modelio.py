@@ -35,10 +35,21 @@ from src.models import create_model  # noqa: E402
 
 
 def checkpoint_path(cfg, project_root: Path = PROJECT_ROOT) -> Path:
+    """Mirror of TrainConfig.run_dir, which now encodes the seed.
+
+    Runs at the reference seed (42) keep the historical layout; any other seed
+    lives in fold_{k}_seed{s}. This MUST stay in step with
+    src/config/schema.py::run_dir or --checkpoint-suffix resolves to the wrong
+    file and the seed ceiling is computed from the wrong models.
+    """
     run_dir = Path(cfg.output_dir)
     if not run_dir.is_absolute():
         run_dir = project_root / run_dir
-    return run_dir / cfg.dataset / cfg.architecture / f"fold_{cfg.fold}" / "checkpoints" / "best.pt"
+    tag = f"fold_{cfg.fold}"
+    seed = int(getattr(cfg, "seed", 42))
+    if seed != 42:
+        tag = f"{tag}_seed{seed}"
+    return run_dir / cfg.dataset / cfg.architecture / tag / "checkpoints" / "best.pt"
 
 
 @dataclass

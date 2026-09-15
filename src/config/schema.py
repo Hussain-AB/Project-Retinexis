@@ -50,6 +50,10 @@ class TrainConfig:
     sample_id_col: str = "image_id"
     label_col: str = "label"
     patient_id_col: str = "patient_id"
+    # Origin-cohort column, written to every predictions row so within-site
+    # metrics need no positional join. "source_dataset" for hypertension;
+    # None for single-cohort tasks like CIMT, which fall back to config.dataset.
+    source_col: str | None = None
 
     # Phase 1: Linear Probe
     # Frozen backbone, head-only training. Quick screening.
@@ -64,9 +68,17 @@ class TrainConfig:
     phase2_batch_size: int = 32
     lr_decay_factor: float = 0.65       # layer-wise: lr_i = base_lr * (factor ^ (n_layers - i))
     warmup_epochs: int = 5              # linear warmup before cosine decay
-    patience: int = 7                   # early stopping on val AUROC
+    patience: int = 7                   # early stopping on inner-val AUROC
     weight_decay: float = 0.05
     min_lr: float = 1e-6                # floor for cosine schedule
+    min_delta: float = 0.001            # improvement needed to reset patience
+                                        # (was hardcoded in trainer.py)
+    # Horizon the cosine schedule anneals over. phase2_epochs is the hard CAP;
+    # early stopping normally fires at 10-33. Building the cosine for 50 epochs
+    # meant the LR never left 97% of base and no model ever annealed. Set this
+    # to the realistic budget instead. None => fall back to phase2_epochs
+    # (exactly the old behaviour).
+    scheduler_total_epochs: int | None = 30
 
     # Loss
     use_weighted_bce: bool = False
@@ -85,6 +97,17 @@ class TrainConfig:
     pin_memory: bool = True
     persistent_workers: bool = True
     prefetch_factor: int = 2
+
+    # Nested cross-validation
+    # Fraction of TRAINING patients held out as inner validation, used for early
+    # stopping, best-checkpoint selection, temperature fitting and threshold
+    # choice. 0.0 reproduces the old two-way behaviour, in which the reported
+    # fold was also the selection fold and the reported AUROC was therefore
+    # optimistically biased. Consumed by the split generators, not at runtime.
+    inner_val_frac: float = 0.15
+
+    # Raise (rather than warn) when split IDs are absent from the labels CSV.
+    strict_missing_ids: bool = True
 
     # Reproducibility
     seed: int = 42
@@ -130,6 +153,10 @@ class TrainConfig:
         self.patience = int(self.patience)
         self.weight_decay = float(self.weight_decay)
         self.min_lr = float(self.min_lr)
+        self.min_delta = float(self.min_delta)
+        self.inner_val_frac = float(self.inner_val_frac)
+        if self.scheduler_total_epochs is not None:
+            self.scheduler_total_epochs = int(self.scheduler_total_epochs)
         self.num_workers = int(self.num_workers)
         self.seed = int(self.seed)
         self.aug_rotation = float(self.aug_rotation)
@@ -144,10 +171,25 @@ class TrainConfig:
         self.aug_random_erasing = float(self.aug_random_erasing)
 
     # Derived / Computed
+    # The reference seed. Runs at this seed keep the historical directory layout
+    # so existing paths, scripts and the xai module are unaffected.
+    REFERENCE_SEED = 42
+
     @property
     def run_dir(self) -> Path:
-        """Deterministic output path: {output_dir}/{dataset}/{architecture}/fold_{fold}"""
-        return Path(self.output_dir) / self.dataset / self.architecture / f"fold_{self.fold}"
+        """Deterministic output path.
+
+            seed == 42 : {output_dir}/{dataset}/{architecture}/fold_{fold}
+            otherwise  : {output_dir}/{dataset}/{architecture}/fold_{fold}_seed{seed}
+
+        The seed MUST be part of the path. Without it a second seed writes to the
+        same directory and overwrites the first run's best.pt -- which would
+        silently destroy the seed study that the whole variance analysis rests on.
+        """
+        tag = f"fold_{self.fold}"
+        if int(self.seed) != self.REFERENCE_SEED:
+            tag = f"{tag}_seed{int(self.seed)}"
+        return Path(self.output_dir) / self.dataset / self.architecture / tag
 
     @property
     def checkpoint_dir(self) -> Path:
@@ -160,6 +202,30 @@ class TrainConfig:
     @property
     def log_dir(self) -> Path:
         return self.run_dir / "logs"
+
+    @property
+    def val_predictions_path(self) -> Path:
+        """Per-image predictions on the held-out outer fold. The reported file.
+
+        Name unchanged from the pre-ISBI pipeline so aggregate_folds.py,
+        calibrate.py, summarize_all_models.py and xai/check_frame.py keep working.
+        """
+        return self.predictions_dir / "val_predictions.csv"
+
+    @property
+    def inner_val_predictions_path(self) -> Path:
+        """Per-image predictions on the inner-validation split.
+
+        Fit temperature and choose the operating threshold here, never on
+        val_predictions.csv -- that is what makes the reported calibration and
+        operating point honest.
+        """
+        return self.predictions_dir / "inner_val_predictions.csv"
+
+    @property
+    def manifest_path(self) -> Path:
+        """Provenance record written at the end of every run."""
+        return self.run_dir / "run_manifest.json"
 
     # Serialisation
     def to_dict(self) -> dict[str, Any]:
@@ -219,6 +285,21 @@ class TrainConfig:
                 "metadata_columns is set but use_metadata=False. "
                 "Set use_metadata=True or clear metadata_columns."
             )
+
+        if not 0.0 <= self.inner_val_frac < 1.0:
+            raise ValueError(
+                f"inner_val_frac must be in [0, 1), got {self.inner_val_frac}"
+            )
+
+        if self.scheduler_total_epochs is not None:
+            if not 1 <= self.scheduler_total_epochs <= max(1, self.phase2_epochs):
+                raise ValueError(
+                    f"scheduler_total_epochs must be between 1 and phase2_epochs "
+                    f"({self.phase2_epochs}), got {self.scheduler_total_epochs}"
+                )
+
+        if self.min_delta < 0:
+            raise ValueError(f"min_delta must be >= 0, got {self.min_delta}")
 
         if self.num_workers < 0:
             raise ValueError(
