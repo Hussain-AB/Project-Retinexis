@@ -41,6 +41,9 @@ METADATA FUSION:
 
 from __future__ import annotations
 
+import hashlib
+import json
+import subprocess
 import time
 from pathlib import Path
 from typing import Any
@@ -159,6 +162,23 @@ class Trainer:
         if getattr(config, "backbone_checkpoint_path", None):
             self._load_backbone_weights(config.backbone_checkpoint_path)
 
+        # Refuse to silently overwrite a finished run.
+        # Every previous relaunch reset best_val_auroc to 0 and then overwrote
+        # best.pt with the LAST restart's model rather than the best across
+        # restarts, so the surviving checkpoint was not the best one. Fail loudly
+        # instead; delete the run directory to start clean, or pass
+        # --checkpoint_path to resume properly.
+        best_existing = config.checkpoint_dir / "best.pt"
+        if best_existing.exists() and config.checkpoint_path is None:
+            raise RuntimeError(
+                f"{best_existing} already exists and no --checkpoint_path was given.\n"
+                f"Starting fresh would overwrite it with a possibly worse model.\n"
+                f"  * to restart cleanly: delete {config.run_dir}\n"
+                f"  * to resume:          pass --checkpoint_path {config.checkpoint_dir / 'last.pt'}"
+            )
+
+        self._start_time = time.time()
+
         # Save resolved config (exists even if job is killed)
         config.save(config.run_dir / "config_resolved.yaml")
 
@@ -190,6 +210,12 @@ class Trainer:
             results["best_val_auroc"] = final_metrics.get("auroc", self.best_val_auroc)
         else:
             results["best_val_auroc"] = self.best_val_auroc
+
+        # Provenance record (written even if W&B is unavailable)
+        try:
+            self._write_manifest(results)
+        except Exception as exc:  # never let bookkeeping kill a finished run
+            print(f"  [warn] could not write run manifest: {exc}")
 
         # Log summary to W&B
         self.logger.log_summary(results)
@@ -314,10 +340,15 @@ class Trainer:
         )
         optimiser = AdamW(param_groups)
 
+        # Anneal over the REALISTIC horizon, not the 50-epoch cap. With
+        # total_epochs=50 and early stopping at 10-33, the cosine multiplier was
+        # still 0.97 when training ended, so the LR never decayed and every model
+        # fine-tuned at an effectively constant rate. phase2_epochs remains the
+        # hard cap and patience is untouched; only the annealing horizon changes.
         scheduler = build_cosine_warmup_scheduler(
             optimiser=optimiser,
             warmup_epochs=config.warmup_epochs,
-            total_epochs=config.phase2_epochs,
+            total_epochs=(config.scheduler_total_epochs or config.phase2_epochs),
             min_lr=config.min_lr,
             base_lr=config.phase2_lr,
         )
@@ -337,8 +368,14 @@ class Trainer:
         print(f"  Trainable params: {trainable:,} (all layers)")
 
         patience_counter = 0
-        min_delta = 0.001
-        phase2_best_auroc = self.best_val_auroc
+        min_delta = config.min_delta
+        # Phase 2 tracks its OWN best, starting from zero.
+        # Seeding it with Phase 1's best meant fine-tuning had to beat the linear
+        # probe before it would write any checkpoint -- and _run_phase1 writes
+        # best.pt itself when phase2_epochs == 0. That is how SE-ResNeXt ended up
+        # with a best.pt, a predictions file and a row in the Phase 2 summary
+        # table while all five of its training logs contain phase-1 epochs only.
+        phase2_best_auroc = 0.0
 
         start = self.start_epoch if self.start_phase == "phase2" else 0
 
@@ -448,7 +485,10 @@ class Trainer:
         all_probs = []
         all_labels = []
 
-        pbar = tqdm(self.val_loader, desc="  Val  ", leave=False)
+        # Inner validation, never the reported fold. Early stopping and
+        # best-checkpoint selection both read this, so using the outer fold here
+        # is what made every previously reported AUROC optimistically biased.
+        pbar = tqdm(self.inner_val_loader, desc=" InVal", leave=False)
         for batch in pbar:
             images = batch["image"].to(self.device, non_blocking=True)
             labels = batch["label"].to(self.device, non_blocking=True)
@@ -504,6 +544,8 @@ class Trainer:
             "scheduler_state_dict": scheduler.state_dict() if scheduler else None,
             "epoch": epoch,
             "phase": phase,
+            "seed": int(self.config.seed),
+            "input_size": int(self.model.preprocessing_config.input_size),
             "best_val_auroc": self.best_val_auroc,
             "metrics": metrics,
             "config": self.config.to_dict(),
@@ -576,59 +618,179 @@ class Trainer:
               f"(shape mismatch or new layers — kept pretrained init)")
 
     #  FINAL EVALUATION
-    def _evaluate_final(self) -> dict:
-        """Run val fold with best checkpoint, save predictions CSV."""
-        print(f"\n{'─' * 50}")
-        print("Final Evaluation (best checkpoint)")
-        print(f"{'─' * 50}")
+    def _predict(self, loader: DataLoader, split: str) -> pd.DataFrame:
+        """Run inference over one loader; return ONE ROW PER IMAGE.
 
+        Every row carries the identity needed to join a prediction back to its
+        image, patient, cohort and attribution map. The previous schema had only
+        patient_id / y_true / y_prob / y_pred, so a prediction could not be tied
+        to an image at all and image_id had to be recovered by a positional join
+        against the metadata.
+
+        y_logit is stored RAW. scripts/calibrate.py used to recover logits by
+        inverting a CLAMPED sigmoid -- clamp(p, 1e-7, 1-1e-7) -- which destroys
+        the tails and loses precision near 0 and 1, so every temperature fitted
+        that way was contaminated. Fit temperature from y_logit instead.
+        """
         self.model.eval()
         if self.metadata_head is not None:
             self.metadata_head.eval()
 
-        all_probs = []
-        all_labels = []
-        all_patient_ids = []
+        ident_keys = ("sample_id", "image_path", "patient_id", "source_dataset")
+        ident: dict[str, list] = {k: [] for k in ident_keys}
+        logits_all, probs_all, labels_all = [], [], []
 
         with torch.no_grad():
-            for batch in self.val_loader:
+            for batch in tqdm(loader, desc=f"  {split:<9}", leave=False):
                 images = batch["image"].to(self.device, non_blocking=True)
                 labels = batch["label"].to(self.device, non_blocking=True)
 
                 logits = self._forward(batch, images)
                 probs = torch.sigmoid(logits)
 
-                all_probs.append(probs.cpu().numpy())
-                all_labels.append(labels.cpu().numpy())
-                all_patient_ids.extend(batch["patient_id"])
+                logits_all.append(logits.float().cpu().numpy())
+                probs_all.append(probs.float().cpu().numpy())
+                labels_all.append(labels.cpu().numpy())
+                for k in ident_keys:
+                    ident[k].extend(batch[k])
 
-        y_prob = np.concatenate(all_probs, axis=0).ravel()
-        y_true = np.concatenate(all_labels, axis=0).ravel()
-        y_pred = (y_prob >= 0.5).astype(int)
+        y_logit = np.concatenate(logits_all, axis=0).ravel()
+        y_prob = np.concatenate(probs_all, axis=0).ravel()
+        y_true = np.concatenate(labels_all, axis=0).ravel()
 
-        # Compute final metrics
-        metrics = compute_metrics(y_true, y_prob)
+        return pd.DataFrame(
+            {
+                "sample_id": ident["sample_id"],
+                "patient_id": ident["patient_id"],
+                "source_dataset": ident["source_dataset"],
+                "split": split,
+                "y_true": y_true,
+                "y_logit": y_logit,
+                "y_prob": y_prob,
+                "y_pred": (y_prob >= 0.5).astype(int),
+                "image_path": ident["image_path"],
+            }
+        )
 
-        print(f"  AUROC:       {metrics['auroc']:.4f}")
-        print(f"  AUPRC:       {metrics['auprc']:.4f}")
-        print(f"  ECE:         {metrics['ece']:.4f}")
-        print(f"  F1:          {metrics['f1']:.4f}")
-        print(f"  Sensitivity: {metrics['sensitivity']:.4f}")
-        print(f"  Specificity: {metrics['specificity']:.4f}")
-        print(f"  N samples:   {metrics['n_samples']}")
+    def _evaluate_final(self) -> dict:
+        """Score the best checkpoint on BOTH splits and write per-image CSVs.
 
-        # Save predictions CSV — one row per sample. This is the
-        # source of truth for bootstrap CIs, DeLong tests, threshold
-        # selection, and subgroup analysis.
-        predictions_df = pd.DataFrame({
-            "patient_id": all_patient_ids,
-            "y_true": y_true,
-            "y_prob": y_prob,
-            "y_pred": y_pred,
-        })
+        inner_val is written so temperature and the operating threshold can be
+        fitted off the reported fold. val is the held-out outer fold and is the
+        number that gets reported; its filename is unchanged, so
+        aggregate_folds.py, calibrate.py, summarize_all_models.py and
+        xai/check_frame.py keep working.
+        """
+        print(f"\n{'-' * 50}")
+        print("Final Evaluation (best checkpoint)")
+        print(f"{'-' * 50}")
 
-        csv_path = self.config.predictions_dir / "val_predictions.csv"
-        predictions_df.to_csv(csv_path, index=False)
-        print(f"  Predictions saved: {csv_path}")
+        self.config.predictions_dir.mkdir(parents=True, exist_ok=True)
 
+        inner_df = self._predict(self.inner_val_loader, "inner_val")
+        inner_df.to_csv(self.config.inner_val_predictions_path, index=False)
+        inner_metrics = compute_metrics(
+            inner_df["y_true"].values, inner_df["y_prob"].values)
+
+        val_df = self._predict(self.val_loader, "val")
+        val_df.to_csv(self.config.val_predictions_path, index=False)
+        metrics = compute_metrics(val_df["y_true"].values, val_df["y_prob"].values)
+
+        print(f"  {'':<14}{'inner_val':>11}{'val (held out)':>16}")
+        for key in ("auroc", "auprc", "ece", "f1", "sensitivity", "specificity"):
+            print(f"  {key:<14}{inner_metrics[key]:>11.4f}{metrics[key]:>16.4f}")
+        print(f"  {'n_samples':<14}{inner_metrics['n_samples']:>11}{metrics['n_samples']:>16}")
+        print(f"  {'patients':<14}{inner_df['patient_id'].nunique():>11}"
+              f"{val_df['patient_id'].nunique():>16}")
+
+        # Within-cohort breakdown, free when source_dataset varies.
+        if val_df["source_dataset"].nunique() > 1:
+            print("\n  val AUROC by source cohort:")
+            for src, grp in val_df.groupby("source_dataset"):
+                m = compute_metrics(grp["y_true"].values, grp["y_prob"].values)
+                print(f"    {src:<16} n={len(grp):<7} prevalence={m['prevalence']:.4f} "
+                      f"auroc={m['auroc']:.4f}")
+
+        print(f"\n  Predictions: {self.config.val_predictions_path}")
+        print(f"               {self.config.inner_val_predictions_path}")
+
+        self._final_inner_metrics = inner_metrics
         return metrics
+
+    def _write_manifest(self, results: dict) -> None:
+        """Provenance record, one JSON per run directory.
+
+        The two data hashes are the point: they are what lets the paper state,
+        provably, that every model saw byte-identical data. That claim is the
+        strongest methodological credential this project has and it was
+        previously unrecorded.
+        """
+        def _sha256(path) -> str | None:
+            try:
+                h = hashlib.sha256()
+                with open(path, "rb") as f:
+                    for chunk in iter(lambda: f.read(1 << 20), b""):
+                        h.update(chunk)
+                return h.hexdigest()
+            except Exception:
+                return None
+
+        def _git(*args: str) -> str | None:
+            try:
+                return subprocess.check_output(
+                    ["git", *args], cwd=Path(__file__).resolve().parents[2],
+                    stderr=subprocess.DEVNULL, timeout=10,
+                ).decode().strip()
+            except Exception:
+                return None
+
+        cfg = self.config
+        best = cfg.checkpoint_dir / "best.pt"
+        phase_of_best = epoch_of_best = None
+        if best.exists():
+            try:
+                ck = torch.load(best, map_location="cpu", weights_only=False)
+                phase_of_best, epoch_of_best = ck.get("phase"), ck.get("epoch")
+            except Exception:
+                pass
+
+        manifest = {
+            "git_sha": _git("rev-parse", "HEAD"),
+            "git_dirty": bool(_git("status", "--porcelain", "--untracked-files=no")),
+            "task": cfg.dataset,
+            "architecture": cfg.architecture,
+            "fold": cfg.fold,
+            "seed": int(cfg.seed),
+            "deterministic": bool(cfg.deterministic),
+            "amp": False,
+            "input_size": int(self.model.preprocessing_config.input_size),
+            "crop_strategy": self.model.preprocessing_config.crop_strategy,
+            "phase_of_best": phase_of_best,
+            "epoch_of_best": epoch_of_best,
+            "phase2_epochs_cap": cfg.phase2_epochs,
+            "scheduler_total_epochs": cfg.scheduler_total_epochs,
+            "patience": cfg.patience,
+            "min_delta": cfg.min_delta,
+            "use_weighted_bce": bool(cfg.use_weighted_bce),
+            "pos_weight_config": cfg.pos_weight,
+            "use_metadata": bool(cfg.use_metadata),
+            "use_vessel_masks": bool(getattr(cfg, "use_vessel_masks", False)),
+            "labels_csv": str(cfg.labels_csv),
+            "labels_csv_sha256": _sha256(cfg.labels_csv),
+            "splits_file": str(cfg.splits_file),
+            "splits_file_sha256": _sha256(cfg.splits_file),
+            "n_train": len(self.train_loader.dataset),
+            "n_inner_val": len(self.inner_val_loader.dataset),
+            "n_val": len(self.val_loader.dataset),
+            "wall_clock_sec": round(time.time() - getattr(self, "_start_time", time.time()), 1),
+            "torch": torch.__version__,
+            "cuda": torch.version.cuda,
+            "gpu": (torch.cuda.get_device_name(0) if torch.cuda.is_available() else None),
+            "best_val_auroc": results.get("best_val_auroc"),
+            "final_metrics": results.get("final_metrics"),
+            "inner_val_metrics": getattr(self, "_final_inner_metrics", None),
+        }
+        cfg.manifest_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(cfg.manifest_path, "w") as f:
+            json.dump(manifest, f, indent=2, default=str)
+        print(f"  Manifest:    {cfg.manifest_path}")
