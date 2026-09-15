@@ -24,6 +24,11 @@ class CIMTDataset(BaseRetinalDataset):
             "image_path": str(image_path),
         }
 
+        if self.vessel_mask_dir is not None and self.vessel_transform is not None:
+            vessel_path = self.vessel_mask_dir / filename
+            vessel_mask = Image.open(vessel_path).convert("RGB")
+            sample["vessel_mask"] = self.vessel_transform(vessel_mask)
+
         if self.metadata_encoder is not None:
             sample["metadata"] = self.metadata_encoder.encode(row)
 
