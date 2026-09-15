@@ -38,6 +38,20 @@ def parse_args() -> argparse.Namespace:
         help="Allowed absolute deviation in val positive rate from overall (default: 0.05)",
     )
     p.add_argument(
+        "--inner-val-frac",
+        type=float,
+        default=0.15,
+        help="Fraction of TRAINING patients held out as inner validation, used for "
+             "early stopping / checkpoint selection / calibration. 0.0 reproduces the "
+             "old two-way train/val behaviour. Default: 0.15",
+    )
+    p.add_argument(
+        "--strat-extra-col",
+        default=None,
+        help="Optional second column to cross with the label when stratifying "
+             "(e.g. source_dataset). Keeps each fold's cohort mix stable.",
+    )
+    p.add_argument(
         "--keep-na-labels",
         action="store_true",
         help="Do not drop NA labels before split generation (not recommended).",
@@ -68,6 +82,8 @@ def main() -> None:
         seed=args.seed,
         sample_id_col=args.sample_id_col,
         task_name=args.task_name,
+        inner_val_frac=args.inner_val_frac,
+        strat_extra_col=args.strat_extra_col,
     )
 
     summary = validate_splits(
@@ -77,6 +93,7 @@ def main() -> None:
         label_col=args.label_col,
         sample_id_col=args.sample_id_col,
         tolerance=args.tolerance,
+        strat_extra_col=args.strat_extra_col,
     )
 
     # Print concise summary
@@ -88,8 +105,12 @@ def main() -> None:
     for f in summary["folds"]:
         print(
             f"[fold {f['fold']}] "
-            f"train_samples={f['n_train_samples']} val_samples={f['n_val_samples']} "
-            f"train_patients={f['n_train_patients']} val_patients={f['n_val_patients']} "
+            f"train_samples={f['n_train_samples']} "
+            f"inner_val_samples={f['n_inner_val_samples']} "
+            f"val_samples={f['n_val_samples']} "
+            f"train_patients={f['n_train_patients']} "
+            f"inner_val_patients={f['n_inner_val_patients']} "
+            f"val_patients={f['n_val_patients']} "
             f"train_pos={f['train_pos_rate']:.4f} val_pos={f['val_pos_rate']:.4f}"
         )
 
