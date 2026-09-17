@@ -77,6 +77,12 @@ _EXPECTED_KWARGS: dict[str, set[str]] = {
         "drop_path_rate",
         "global_pool",
     },
+    "maxvit": {
+        "variant", "num_classes", "pretrained", "drop_rate", "input_size_override",
+    },
+    "coatnet": {
+        "variant", "num_classes", "pretrained", "drop_rate", "input_size_override",
+    },
 }
 
 def create_model(architecture: str, **kwargs) -> BaseClassifier:

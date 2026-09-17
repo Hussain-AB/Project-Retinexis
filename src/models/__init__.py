@@ -13,6 +13,8 @@ _LAZY_IMPORTS: dict[str, tuple[str, str]] = {
     "ConvNeXtV2Classifier": (".convnextv2", "ConvNeXtV2Classifier"),
     "RETFoundDINOv2": (".retfound_dinov2", "RETFoundDINOv2"),
     "RETFoundMAEClassifier": (".retfound_mae", "RETFoundMAEClassifier"),
+    "MaxViTClassifier": (".maxvit", "MaxViTClassifier"),
+    "CoAtNetClassifier": (".coatnet", "CoAtNetClassifier"),
     "create_model": (".factory", "create_model"),
     "MODEL_REGISTRY": (".registry", "MODEL_REGISTRY"),
 }
@@ -28,6 +30,8 @@ __all__ = [
     "ConvNeXtV2Classifier",
     "RETFoundDINOv2",
     "RETFoundMAEClassifier",
+    "MaxViTClassifier",
+    "CoAtNetClassifier",
     "create_model",
     "MODEL_REGISTRY",
 ]

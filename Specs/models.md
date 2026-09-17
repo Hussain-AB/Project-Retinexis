@@ -65,6 +65,14 @@ Efficient specialist. ViT-Small, ~22M params. Feature dim 384. Pretrained on hal
 
 Universal baseline. ~25M params. Feature dim 2048. Loaded via `timm.create_model('resnet50', ...)`. The simplest model file to write — same timm pattern as EfficientNet. Earlier BRSET work used this before switching to ConvNeXt V2. Anchors results to the broader literature.
 
+### `maxvit.py` — MaxViT-Base
+
+**Hybrid CNN+Transformer.** ~120M params. Feature dim 768, native 224px. Loaded via `timm.create_model('maxvit_base_tf_224.in1k', ...)`. Each stage runs an MBConv block (same depthwise-conv block EfficientNet uses) followed by block attention (windowed) and grid attention (dilated, global) — convolution and attention live inside the same stage rather than as separate halves of the network. Same one-file, config-only pattern as EfficientNet; only `maxvit_base_tf_224.in1k` is registered for now.
+
+### `coatnet.py` — CoAtNet-1
+
+**Hybrid CNN+Transformer.** ~42M params. Feature dim 768, native 224px. Loaded via `timm.create_model('coatnet_1_rw_224.sw_in1k', ...)` — the `_rw` (Ross Wightman recipe) variant, since the plain `coatnet_N_224` names in timm ship without pretrained weights. Early stages are MBConv/convolution; once the feature map is small enough, later stages switch to Transformer blocks with relative self-attention. "CoAtNet" = Conv + Attention Network.
+
 
 ## Dataset Priorities
 
@@ -72,7 +80,7 @@ Universal baseline. ~25M params. Feature dim 2048. Loaded via `timm.create_model
 - Strong for both: RETFound-DINOv2, DINOv3-Large.
 - CIMT-specific priority: SE-ResNeXt-50 (their literature baseline).
 - BRSET-specific priority: ConvNeXt V2-Base (their literature baseline).
-- Exploratory: DINOv2-Base, DINOv2-Giant, RETFound-Green, ResNet-50.
+- Exploratory: DINOv2-Base, DINOv2-Giant, RETFound-Green, ResNet-50, MaxViT-Base, CoAtNet-1.
 
 **NOTE:** The timm-based models (SE-ResNeXt, ConvNeXt V2, ResNet-50) are essentially the EfficientNet file with different model strings. The ViT-based models (RETFound variants, DINOv2, DINOv3) need more thought around weight loading and headless architectures.
 

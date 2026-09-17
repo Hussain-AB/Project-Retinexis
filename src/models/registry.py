@@ -9,6 +9,8 @@ from .retfound_dinov2 import RETFoundDINOv2
 from .retfound_green import RETFoundGreenClassifier
 from .retfound_mae import RETFoundMAEClassifier
 from .swanV2 import SWANv2Classifier
+from .maxvit import MaxViTClassifier
+from .coatnet import CoAtNetClassifier
 
 MODEL_REGISTRY: dict[str, type] = {
     "efficientnet": EfficientNetClassifier,
@@ -23,4 +25,7 @@ MODEL_REGISTRY: dict[str, type] = {
     "retfound_dinov2": RETFoundDINOv2,
     "retfound_green": RETFoundGreenClassifier,
     "retfound_mae": RETFoundMAEClassifier,
+    # Hybrid CNN+Transformer models — see maxvit.py / coatnet.py docstrings.
+    "maxvit": MaxViTClassifier,
+    "coatnet": CoAtNetClassifier,
 }
