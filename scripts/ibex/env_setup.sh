@@ -20,45 +20,55 @@ cd "${PROJECT_ROOT}" || return 1
 export DATA_DIR="${PROJECT_ROOT}/data"
 export PYTHONPATH="${PROJECT_ROOT}:${PYTHONPATH}"
 
-# --- module ------------------------------------------------------------------
-# The version is NOT pinned here by default, because a pinned version that gets
-# retired fails closed and blocks the grid -- which is what happened to
-# machine_learning/2026.02, inherited from job_template.slurm. Set
-# RETINEXIS_ML_MODULE to pin it once you know which version the grid ran on,
-# and record that string in the paper's methods section.
-: "${RETINEXIS_ML_MODULE:=machine_learning}"
-if ! module load "${RETINEXIS_ML_MODULE}" 2>/dev/null; then
-    echo "[env_setup] ERROR: could not load module '${RETINEXIS_ML_MODULE}'" >&2
-    echo "[env_setup]        run: module av machine_learning" >&2
-    return 1
-fi
-_ML_MODULE_LOADED="$(module -t list 2>&1 | grep -i machine_learning || true)"
-echo "[env_setup] module=${_ML_MODULE_LOADED:-${RETINEXIS_ML_MODULE}}"
-if [ "${RETINEXIS_ML_MODULE}" = "machine_learning" ]; then
-    echo "[env_setup] NOTE: module version is unpinned -- whatever the site" >&2
-    echo "[env_setup]       defaults to today. Pin RETINEXIS_ML_MODULE before" >&2
-    echo "[env_setup]       the grid so all 96 runs share one environment." >&2
-fi
-
 # --- python ------------------------------------------------------------------
-# A project venv takes precedence, but ONLY if it actually runs. myenv/ is built
-# against the module's interpreter and borrows its libpython at runtime, so an
-# orphaned venv fails with "libpython3.X.so.1.0: cannot open shared object
-# file". Activating it anyway would hand every job a broken python.
-if [ -f "${PROJECT_ROOT}/myenv/bin/activate" ]; then
-    # shellcheck disable=SC1091
-    source "${PROJECT_ROOT}/myenv/bin/activate"
-    if ! python -c "import sys" >/dev/null 2>&1; then
-        echo "[env_setup] WARNING: ${PROJECT_ROOT}/myenv is not usable under" >&2
-        echo "[env_setup]          this module; falling back to the module python." >&2
-        if [ -n "${VIRTUAL_ENV:-}" ] && command -v deactivate >/dev/null 2>&1; then
-            deactivate
-        fi
+# myenv/ is a self-contained venv (include-system-site-packages = false) built
+# from a standalone interpreter, NOT from a machine_learning module -- see
+# myenv/pyvenv.cfg. The only thing it needs from outside is that interpreter's
+# libpython, which is why it dies with "libpython3.11.so.1.0: cannot open
+# shared object file" when nothing has put it on the linker path.
+#
+# So: read the base prefix out of pyvenv.cfg and add its lib dir to
+# LD_LIBRARY_PATH. No module required, and the venv itself pins every package,
+# which makes it a better reproducibility anchor than a site module that can be
+# retired mid-grid (machine_learning/2026.02 already was).
+#
+# Set RETINEXIS_ML_MODULE to load a site module instead, for a machine where
+# the venv is missing or unusable.
+
+_VENV="${PROJECT_ROOT}/myenv"
+_PYVENV_CFG="${_VENV}/pyvenv.cfg"
+
+if [ -n "${RETINEXIS_ML_MODULE:-}" ]; then
+    if ! module load "${RETINEXIS_ML_MODULE}" 2>/dev/null; then
+        echo "[env_setup] ERROR: could not load module '${RETINEXIS_ML_MODULE}'" >&2
+        return 1
     fi
+    echo "[env_setup] module=${RETINEXIS_ML_MODULE}"
 fi
 
+if [ -f "${_PYVENV_CFG}" ]; then
+    _BASE_BIN="$(awk -F'=' '/^[[:space:]]*home[[:space:]]*=/ {gsub(/^[ \t]+|[ \t]+$/, "", $2); print $2; exit}' "${_PYVENV_CFG}")"
+    if [ -n "${_BASE_BIN}" ]; then
+        _BASE_PREFIX="$(dirname "${_BASE_BIN}")"
+        for _libdir in "${_BASE_PREFIX}/lib" "${_BASE_PREFIX}/lib64"; do
+            if [ -d "${_libdir}" ]; then
+                export LD_LIBRARY_PATH="${_libdir}:${LD_LIBRARY_PATH:-}"
+            fi
+        done
+        echo "[env_setup] venv base=${_BASE_PREFIX}"
+    fi
+    # shellcheck disable=SC1091
+    source "${_VENV}/bin/activate"
+fi
+
+# Never hand a job an interpreter that cannot start.
 if ! python -c "import sys" >/dev/null 2>&1; then
-    echo "[env_setup] ERROR: no working python after module load" >&2
+    echo "[env_setup] ERROR: python does not run." >&2
+    echo "[env_setup]   tried venv: ${_VENV}" >&2
+    echo "[env_setup]   LD_LIBRARY_PATH=${LD_LIBRARY_PATH:-<unset>}" >&2
+    python -c "import sys" 2>&1 | tail -2 >&2
+    echo "[env_setup]   fix: confirm the path in ${_PYVENV_CFG} still exists," >&2
+    echo "[env_setup]        or rebuild myenv, or set RETINEXIS_ML_MODULE." >&2
     return 1
 fi
 
