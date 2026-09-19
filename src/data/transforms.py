@@ -205,6 +205,45 @@ def build_transforms(
     return T.Compose(transforms)
 
 
+def build_vessel_transforms(
+    preprocessing_config: PreprocessingConfig,
+) -> T.Compose:
+    """Build the DETERMINISTIC pipeline for RRWNet vessel masks.
+
+    Mirrors build_transforms' spatial handling -- same crop strategy, same
+    input_size, same interpolation -- but never augments, because the mask is
+    applied independently of the image and any random geometry here would
+    decorrelate the two branches outright.
+
+    WARNING -- known limitation of the vessel arm, not of this function:
+    the image branch DOES augment (rotation, scale, hflip), and the mask does
+    not receive those same draws. A rotated image is therefore paired with an
+    unrotated mask. Before the vessel arm runs for the paper, either drive both
+    branches from one sampled geometric transform, or disable geometric
+    augmentation for vessel runs. The core grid is unaffected: it never loads
+    masks.
+
+    Masks are single-channel sigmoid outputs in [0, 1]; mean=std=0.5 in the
+    model's vessel_preprocessing_config maps them to [-1, 1].
+    """
+    input_size = preprocessing_config.input_size
+    crop_strategy = preprocessing_config.crop_strategy
+
+    transforms = []
+    if crop_strategy in _CROP_STRATEGIES and _CROP_STRATEGIES[crop_strategy] is not None:
+        transforms.append(_CROP_STRATEGIES[crop_strategy]())
+    transforms.append(T.Resize(
+        (input_size, input_size),
+        interpolation=T.InterpolationMode.BICUBIC,
+    ))
+    transforms.append(T.ToTensor())
+    transforms.append(T.Normalize(
+        mean=preprocessing_config.mean,
+        std=preprocessing_config.std,
+    ))
+    return T.Compose(transforms)
+
+
 def _build_augmentation(config: object | None) -> list:
     """Build augmentation transforms from config fields.
 

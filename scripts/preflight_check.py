@@ -228,6 +228,20 @@ def main() -> int:
         print(f"no configs matched: {patterns}")
         return 1
 
+    # The import graph first. A missing function behind a module-level import
+    # takes down every job in the grid regardless of config -- build_transforms'
+    # sibling build_vessel_transforms did exactly that, and no amount of config
+    # checking would have caught it.
+    try:
+        import importlib
+        for mod in ("src.data.transforms", "src.data.loader",
+                    "src.training.trainer", "src.models.base"):
+            importlib.import_module(mod)
+        print("import graph: scripts/train.py's modules all import\n")
+    except Exception as exc:  # noqa: BLE001
+        err("imports", f"{type(exc).__name__}: {exc} -- every job would fail at startup")
+        print(f"import graph: FAILED ({type(exc).__name__}: {exc})\n")
+
     print(f"checking {len(paths)} configs x {len(args.seeds)} seeds "
           f"({len(paths) * len(args.seeds)} jobs)\n")
     for p in paths:

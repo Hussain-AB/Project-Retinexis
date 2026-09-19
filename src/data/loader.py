@@ -29,7 +29,11 @@ import torch
 from torch.utils.data import DataLoader
 
 from src.data.base_dataset import BaseRetinalDataset, MetadataEncoder
-from src.data.transforms import build_transforms, build_vessel_transforms
+# build_vessel_transforms is imported lazily at its single call site below.
+# It is needed only when use_vessel_masks=True, and a top-level import of a
+# vessel-only helper once took down every job in the grid -- EfficientNet-B2
+# on CIMT does not load masks, yet could not import this module.
+from src.data.transforms import build_transforms
 from src.models.base import BaseClassifier
 
 
@@ -160,6 +164,7 @@ def create_dataloaders(
                 f"vessel_preprocessing_config property. Use architecture=efficientnet_vessel."
             )
         vessel_mask_dir = config.vessel_mask_dir
+        from src.data.transforms import build_vessel_transforms
         vessel_transform = build_vessel_transforms(vessel_cfg)
 
     # Construct dataset instances
