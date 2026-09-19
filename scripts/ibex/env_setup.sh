@@ -79,17 +79,29 @@ fi
 # present in a venv where neither could import, because `packaging` and
 # `filelock` were missing. Only an actual import proves the package works.
 _IMPORT_REPORT="$(python - <<'PYCHK' 2>/dev/null
-mods = ["torch","torchvision","yaml","numpy","pandas","PIL","sklearn","scipy",
-        "skimage","timm","transformers","huggingface_hub","tqdm","wandb"]
-bad = []
-for m in mods:
+# required: the training path imports every one of these.
+req = ["torch","torchvision","yaml","numpy","pandas","PIL","sklearn","scipy",
+       "timm","transformers","huggingface_hub","tqdm","wandb"]
+# optional: vessel-mask generation (src/rrwnet) and attribution (xai/) only.
+# Missing these must not block the core grid, which never imports them.
+opt = ["skimage"]
+out = []
+for m in req + opt:
     try:
         __import__(m)
     except Exception as exc:
-        bad.append(f"{m}: {type(exc).__name__}: {exc}")
-print("\n".join(bad))
+        tag = "OPTIONAL " if m in opt else ""
+        out.append(f"{tag}{m}: {type(exc).__name__}: {exc}")
+print(chr(10).join(out))
 PYCHK
 )"
+_OPT_MISSING="$(printf '%s\n' "${_IMPORT_REPORT}" | grep "^OPTIONAL " || true)"
+_IMPORT_REPORT="$(printf '%s\n' "${_IMPORT_REPORT}" | grep -v "^OPTIONAL " | grep -v "^$" || true)"
+if [ -n "${_OPT_MISSING}" ]; then
+    echo "[env_setup] note: optional packages unavailable -- vessel masks and" >&2
+    echo "[env_setup]       xai only; the core grid never imports them:" >&2
+    echo "${_OPT_MISSING}" | sed "s/^OPTIONAL /[env_setup]   /" >&2
+fi
 if [ -n "${_IMPORT_REPORT}" ]; then
     echo "[env_setup] ERROR: packages present but not importable:" >&2
     echo "${_IMPORT_REPORT}" | sed 's/^/[env_setup]   /' >&2
