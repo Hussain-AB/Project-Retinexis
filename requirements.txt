@@ -11,7 +11,11 @@ safetensors
 
 # Data & numerics
 numpy
-pandas
+# pandas 3.0 changes the default string dtype from object to str, which
+# alters how sample_id / patient_id compare and join. Every split, merge
+# and predictions CSV in this project keys on those ids, so stay on the
+# 2.x line the code was written and verified against.
+pandas>=2.2,<3
 Pillow
 albumentations
 opencv-python

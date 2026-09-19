@@ -72,22 +72,30 @@ if ! python -c "import sys" >/dev/null 2>&1; then
     return 1
 fi
 
-# Fail here rather than inside a queued job. torch alone is not enough: a venv
-# with torch but no pandas/yaml dies five seconds into training, after the job
-# has already been scheduled onto a GPU.
-_MISSING="$(python - <<'PYCHK' 2>/dev/null
-import importlib.util as u
-need = ["torch","torchvision","yaml","numpy","pandas","PIL","sklearn","scipy",
-        "timm","transformers","huggingface_hub","tqdm","wandb"]
-print(" ".join(m for m in need if u.find_spec(m) is None))
+# Fail here rather than inside a queued job.
+#
+# These are IMPORTED, not merely located. importlib.util.find_spec() only finds
+# a package directory on disk -- it reported transformers and huggingface_hub as
+# present in a venv where neither could import, because `packaging` and
+# `filelock` were missing. Only an actual import proves the package works.
+_IMPORT_REPORT="$(python - <<'PYCHK' 2>/dev/null
+mods = ["torch","torchvision","yaml","numpy","pandas","PIL","sklearn","scipy",
+        "skimage","timm","transformers","huggingface_hub","tqdm","wandb"]
+bad = []
+for m in mods:
+    try:
+        __import__(m)
+    except Exception as exc:
+        bad.append(f"{m}: {type(exc).__name__}: {exc}")
+print("\n".join(bad))
 PYCHK
 )"
-if [ -n "${_MISSING}" ]; then
-    echo "[env_setup] ERROR: missing packages: ${_MISSING}" >&2
-    echo "[env_setup]   python: $(command -v python)" >&2
-    echo "[env_setup]   fix (on a LOGIN node, compute nodes have no network):" >&2
-    echo "[env_setup]     source scripts/ibex/env_setup.sh" >&2
-    echo "[env_setup]     pip install -r requirements.txt" >&2
+if [ -n "${_IMPORT_REPORT}" ]; then
+    echo "[env_setup] ERROR: packages present but not importable:" >&2
+    echo "${_IMPORT_REPORT}" | sed 's/^/[env_setup]   /' >&2
+    echo "[env_setup] repair (on a LOGIN node -- compute nodes have no network):" >&2
+    echo "[env_setup]   python -m pip check            # list every broken dependency" >&2
+    echo "[env_setup]   python -m pip install -r requirements.txt" >&2
     return 1
 fi
 
