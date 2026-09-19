@@ -3,9 +3,12 @@
 #
 # Sourced, not executed:   source scripts/ibex/env_setup.sh
 #
-# Every SLURM job sources this so that a change to the module, the Python
-# environment or a cache location happens once rather than in twenty scripts.
-# It is idempotent and safe to source on a login node.
+# Returns non-zero if it cannot produce a working python. A job that sources
+# this under `set -e` therefore dies at the top rather than 40 minutes later
+# with an import error, and never trains against an environment nobody chose.
+#
+# Override the module without editing this file:
+#   RETINEXIS_ML_MODULE=machine_learning/2025.10 source scripts/ibex/env_setup.sh
 
 # --- project root ------------------------------------------------------------
 # Resolved from this file's own location, so the scripts work from any cwd and
@@ -18,13 +21,62 @@ export DATA_DIR="${PROJECT_ROOT}/data"
 export PYTHONPATH="${PROJECT_ROOT}:${PYTHONPATH}"
 
 # --- python ------------------------------------------------------------------
-module load machine_learning/2026.02 2>/dev/null || \
-  echo "[env_setup] WARNING: could not load machine_learning/2026.02" >&2
+# myenv/ is a self-contained venv (include-system-site-packages = false) built
+# from a standalone interpreter, NOT from a machine_learning module -- see
+# myenv/pyvenv.cfg. The only thing it needs from outside is that interpreter's
+# libpython, which is why it dies with "libpython3.11.so.1.0: cannot open
+# shared object file" when nothing has put it on the linker path.
+#
+# So: read the base prefix out of pyvenv.cfg and add its lib dir to
+# LD_LIBRARY_PATH. No module required, and the venv itself pins every package,
+# which makes it a better reproducibility anchor than a site module that can be
+# retired mid-grid (machine_learning/2026.02 already was).
+#
+# Set RETINEXIS_ML_MODULE to load a site module instead, for a machine where
+# the venv is missing or unusable.
 
-# A project venv takes precedence over the module's python when present.
-if [ -f "${PROJECT_ROOT}/myenv/bin/activate" ]; then
+_VENV="${PROJECT_ROOT}/myenv"
+_PYVENV_CFG="${_VENV}/pyvenv.cfg"
+
+if [ -n "${RETINEXIS_ML_MODULE:-}" ]; then
+    if ! module load "${RETINEXIS_ML_MODULE}" 2>/dev/null; then
+        echo "[env_setup] ERROR: could not load module '${RETINEXIS_ML_MODULE}'" >&2
+        return 1
+    fi
+    echo "[env_setup] module=${RETINEXIS_ML_MODULE}"
+fi
+
+if [ -f "${_PYVENV_CFG}" ]; then
+    _BASE_BIN="$(awk -F'=' '/^[[:space:]]*home[[:space:]]*=/ {gsub(/^[ \t]+|[ \t]+$/, "", $2); print $2; exit}' "${_PYVENV_CFG}")"
+    if [ -n "${_BASE_BIN}" ]; then
+        _BASE_PREFIX="$(dirname "${_BASE_BIN}")"
+        for _libdir in "${_BASE_PREFIX}/lib" "${_BASE_PREFIX}/lib64"; do
+            if [ -d "${_libdir}" ]; then
+                export LD_LIBRARY_PATH="${_libdir}:${LD_LIBRARY_PATH:-}"
+            fi
+        done
+        echo "[env_setup] venv base=${_BASE_PREFIX}"
+    fi
     # shellcheck disable=SC1091
-    source "${PROJECT_ROOT}/myenv/bin/activate"
+    source "${_VENV}/bin/activate"
+fi
+
+# Never hand a job an interpreter that cannot start.
+if ! python -c "import sys" >/dev/null 2>&1; then
+    echo "[env_setup] ERROR: python does not run." >&2
+    echo "[env_setup]   tried venv: ${_VENV}" >&2
+    echo "[env_setup]   LD_LIBRARY_PATH=${LD_LIBRARY_PATH:-<unset>}" >&2
+    python -c "import sys" 2>&1 | tail -2 >&2
+    echo "[env_setup]   fix: confirm the path in ${_PYVENV_CFG} still exists," >&2
+    echo "[env_setup]        or rebuild myenv, or set RETINEXIS_ML_MODULE." >&2
+    return 1
+fi
+
+# Fail here rather than inside a queued job.
+if ! python -c "import torch" >/dev/null 2>&1; then
+    echo "[env_setup] ERROR: python runs but 'import torch' fails:" >&2
+    python -c "import torch" 2>&1 | tail -3 >&2
+    return 1
 fi
 
 # --- caches ------------------------------------------------------------------
@@ -53,4 +105,5 @@ export MKL_NUM_THREADS="${OMP_NUM_THREADS}"
 
 echo "[env_setup] PROJECT_ROOT=${PROJECT_ROOT}"
 echo "[env_setup] python=$(command -v python)  $(python --version 2>&1)"
+echo "[env_setup] torch=$(python -c 'import torch;print(torch.__version__, "cuda", torch.version.cuda)' 2>&1)"
 echo "[env_setup] WANDB_MODE=${WANDB_MODE}  HF_HOME=${HF_HOME}"
