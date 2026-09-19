@@ -1,14 +1,21 @@
+from __future__ import annotations
+
+from importlib import import_module
+
 from .base import BaseClassifier, PreprocessingConfig
-from .efficientnet import EfficientNetClassifier
-from .dinov2 import DINOv2Classifier
-from .dinov3 import DINOv3Classifier
-from .resnet import ResNetClassifier
-from .seresnext import SEResNeXtClassifier
-from .convnextv2 import ConvNeXtV2Classifier
-from .retfound_dinov2 import RETFoundDINOv2
-from .retfound_mae import RETFoundMAEClassifier
-from .factory import create_model
-from .registry import MODEL_REGISTRY
+
+_LAZY_IMPORTS: dict[str, tuple[str, str]] = {
+    "EfficientNetClassifier": (".efficientnet", "EfficientNetClassifier"),
+    "DINOv2Classifier": (".dinov2", "DINOv2Classifier"),
+    "DINOv3Classifier": (".dinov3", "DINOv3Classifier"),
+    "ResNetClassifier": (".resnet", "ResNetClassifier"),
+    "SEResNeXtClassifier": (".seresnext", "SEResNeXtClassifier"),
+    "ConvNeXtV2Classifier": (".convnextv2", "ConvNeXtV2Classifier"),
+    "RETFoundDINOv2": (".retfound_dinov2", "RETFoundDINOv2"),
+    "RETFoundMAEClassifier": (".retfound_mae", "RETFoundMAEClassifier"),
+    "create_model": (".factory", "create_model"),
+    "MODEL_REGISTRY": (".registry", "MODEL_REGISTRY"),
+}
 
 __all__ = [
     "BaseClassifier",
@@ -24,3 +31,18 @@ __all__ = [
     "create_model",
     "MODEL_REGISTRY",
 ]
+
+
+def __getattr__(name: str):
+    if name not in _LAZY_IMPORTS:
+        raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
+
+    module_name, attr_name = _LAZY_IMPORTS[name]
+    module = import_module(module_name, __name__)
+    value = getattr(module, attr_name)
+    globals()[name] = value
+    return value
+
+
+def __dir__() -> list[str]:
+    return sorted(set(globals()) | set(__all__))
