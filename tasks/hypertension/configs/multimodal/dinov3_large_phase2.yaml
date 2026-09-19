@@ -1,0 +1,78 @@
+# DINOv3-Large Phase 2 (Fine-tune) — Hypertension Combined Dataset
+# Latest generalist from Meta. ViT-Large, 304M params.
+
+# Identity
+dataset: hypertension_combined
+architecture: dinov3
+model_kwargs:
+  variant: large
+  pretrained: true
+
+# Paths
+data_dir: data/hypertension_combined/images
+labels_csv: data/hypertension_combined/metadata_processed/combined_metadata.csv
+splits_file: tasks/hypertension/splits/hypertension_combined_5fold_splits.json
+output_dir: outputs_multimodal
+
+# Column mapping
+sample_id_col: image_id
+label_col: label
+patient_id_col: patient_id
+
+# Cross-validation
+fold: 0
+
+# Phase 1
+skip_phase1: true
+checkpoint_path: outputs/hypertension_combined/dinov3/fold_0/checkpoints/best.pt
+
+phase1_epochs: 5
+phase1_lr: 1e-3
+phase1_batch_size: 64
+
+# Phase 2: Fine-tune
+phase2_epochs: 50
+phase2_lr: 1e-4
+phase2_batch_size: 32
+lr_decay_factor: 0.65
+warmup_epochs: 5
+patience: 7
+weight_decay: 0.05
+min_lr: 1e-6
+
+# Loss
+use_weighted_bce: true
+pos_weight: null
+
+# Metadata
+use_metadata: true
+metadata_columns: ["age", "gender"]
+metadata_head_hidden: 64
+
+# Data loading
+num_workers: 4
+pin_memory: true
+persistent_workers: true
+prefetch_factor: 2
+
+# Augmentation
+aug_hflip: true
+aug_rotation: 10
+aug_scale_min: 0.98
+aug_scale_max: 1.02
+aug_brightness: 0.05
+aug_contrast: 0.05
+aug_saturation: 0.0
+aug_hue: 0.0
+aug_blur_prob: 0.4
+aug_blur_limit: 3
+aug_random_erasing: 0.0
+
+# Reproducibility
+seed: 42
+deterministic: true
+
+# Logging
+use_wandb: true
+wandb_project: retinexis
+wandb_entity: project_retinexis-king-s-college-london

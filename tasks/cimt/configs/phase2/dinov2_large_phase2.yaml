@@ -13,7 +13,7 @@ model_kwargs:
 data_dir: data/cimt/Fundus_CIMT_2903_Dataset/images_preprocessed
 labels_csv: data/cimt/Fundus_CIMT_2903_Dataset/metadata_processed/processed_metadata.csv
 splits_file: tasks/cimt/splits/cimt_5fold_splits.json
-output_dir: outputs
+output_dir: outputs_isbi
 
 # Column mapping
 sample_id_col: image_id
