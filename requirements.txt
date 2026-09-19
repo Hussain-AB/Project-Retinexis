@@ -30,6 +30,8 @@ tqdm
 
 # Evaluation
 scikit-learn
+# used by src/rrwnet/* and xai/anatomy.py -- never listed, always needed
+scikit-image
 scipy
 matplotlib
 torchmetrics
