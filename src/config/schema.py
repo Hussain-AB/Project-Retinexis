@@ -92,6 +92,20 @@ class TrainConfig:
     metadata_columns: list[str] = field(default_factory=list)
     metadata_head_hidden: int = 0
 
+    # Vessel Mask Fusion (RRWNet)
+    # When enabled, the dataset loads pre-generated vessel masks from
+    # vessel_mask_dir and includes them as "vessel_mask" in each batch.
+    # Requires architecture=efficientnet_vessel.
+    # Run scripts/generate_vessel_masks.py first to generate the masks.
+    use_vessel_masks: bool = False
+    vessel_mask_dir: str = ""
+
+    # Partial backbone warm-start
+    # When set, the trainer loads only shape-matching keys from this
+    # checkpoint into the model before training begins. Used to initialise
+    # the image backbone of efficientnet_vessel from a trained image-only run.
+    backbone_checkpoint_path: str | None = None
+
     # Data Loading
     num_workers: int = 6
     pin_memory: bool = True
@@ -300,6 +314,9 @@ class TrainConfig:
 
         if self.min_delta < 0:
             raise ValueError(f"min_delta must be >= 0, got {self.min_delta}")
+
+        if self.use_vessel_masks and not self.vessel_mask_dir:
+            raise ValueError("use_vessel_masks=True but vessel_mask_dir is empty")
 
         if self.num_workers < 0:
             raise ValueError(
