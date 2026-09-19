@@ -31,7 +31,13 @@ cd "${PROJECT_ROOT}"
 DRY_RUN=0
 FOLD0_ONLY=0
 THROTTLE=6
-ACCOUNT="${SBATCH_ACCOUNT:-x_almofaf}"
+# Left empty by default: Ibex resolves the account automatically, and
+# passing an explicit one is rejected with "Invalid account or
+# account/partition combination". job_template.slurm hardcoded
+# --account=x_almofaf while running out of another user's home; do not
+# copy that. Set SBATCH_ACCOUNT, or pass --account, only if the site
+# later requires it.
+ACCOUNT="${SBATCH_ACCOUNT:-}"
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -131,9 +137,16 @@ for task in cimt hypertension; do
         [ -n "${idx}" ] || continue
         tlimit=$(time_for "${task}" "${model}")
 
+        # A bare "#" rather than an empty string: sbatch stops reading #SBATCH
+        # directives at the first line that is neither a comment nor blank, and
+        # a comment line is unambiguously safe where a blank one is merely
+        # probably safe.
+        acct_line="#"
+        [ -n "${ACCOUNT}" ] && acct_line="#SBATCH --account=${ACCOUNT}"
+
         sbatch <<SBATCH
 #!/bin/bash
-#SBATCH --account=${ACCOUNT}
+${acct_line}
 #SBATCH --job-name=isbi_${task}_${model}
 #SBATCH --array=${idx}%${THROTTLE}
 #SBATCH --output=${PROJECT_ROOT}/${LOG_DIR}/%x_%A_%a.out
