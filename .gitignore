@@ -18,6 +18,10 @@ qc_output
 
 # Training outputs
 outputs/
+# every sibling output tree: outputs_isbi, outputs_isbi_rep,
+# outputs_multimodal, outputs_segmentation* -- all are run artifacts or
+# symlinks into $SCRATCH, none belong in the repo
+outputs*/
 
 # W&B local run data
 wandb/

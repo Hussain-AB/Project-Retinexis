@@ -30,6 +30,29 @@ from typing import Any
 import yaml
 
 
+def _as_bool(value: Any, field_name: str) -> bool:
+    """Coerce a bool-ish CLI/YAML value to a real bool.
+
+    `--override use_weighted_bce false` arrives as the STRING "false", which is
+    truthy, so without this the override silently does the opposite of what it
+    says. Anything unrecognised raises rather than guessing.
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        v = value.strip().lower()
+        if v in {"true", "t", "yes", "y", "1", "on"}:
+            return True
+        if v in {"false", "f", "no", "n", "0", "off", ""}:
+            return False
+    raise ValueError(
+        f"{field_name} must be a boolean, got {value!r}. "
+        f"Use true/false (or 1/0)."
+    )
+
+
 @dataclass
 class TrainConfig:
     """Complete specification for a single training run (1 model × 1 fold)."""
@@ -173,6 +196,17 @@ class TrainConfig:
             self.scheduler_total_epochs = int(self.scheduler_total_epochs)
         self.num_workers = int(self.num_workers)
         self.seed = int(self.seed)
+
+        # Booleans: a string override such as "false" is truthy, so coerce
+        # explicitly rather than letting it invert the setting silently.
+        for _bool_field in (
+            "use_weighted_bce", "use_metadata", "use_vessel_masks",
+            "pin_memory", "persistent_workers", "strict_missing_ids",
+            "deterministic", "resume_weights_only", "skip_phase1",
+            "aug_hflip", "use_wandb",
+        ):
+            setattr(self, _bool_field,
+                    _as_bool(getattr(self, _bool_field), _bool_field))
         self.aug_rotation = float(self.aug_rotation)
         self.aug_scale_min = float(self.aug_scale_min)
         self.aug_scale_max = float(self.aug_scale_max)
