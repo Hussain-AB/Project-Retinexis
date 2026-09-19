@@ -204,12 +204,27 @@ def check_config(path: Path, seed: int) -> None:
             warn(tag, f"checkpoint_path ({cfg.checkpoint_path}) is outside output_dir "
                       f"({cfg.output_dir}) -- confirm it is not an old discarded run")
 
-    # 7. resolution must be pinned where it is otherwise read from a model card
+    # 7. the model module itself must import. src/models is lazy, so a module
+    #    broken by a library upgrade (transformers 5.x changed the processor API)
+    #    stays invisible until that architecture's own job reaches a GPU.
+    try:
+        from src.models.registry import MODEL_REGISTRY
+        if cfg.architecture not in MODEL_REGISTRY:
+            err(tag, f"architecture {cfg.architecture!r} is not in MODEL_REGISTRY "
+                     f"(known: {sorted(MODEL_REGISTRY)})")
+        else:
+            cls = MODEL_REGISTRY[cfg.architecture]
+            __import__(cls.__module__)
+    except Exception as exc:  # noqa: BLE001
+        err(tag, f"model module for {cfg.architecture!r} does not import: "
+                 f"{type(exc).__name__}: {exc}")
+
+    # 8. resolution must be pinned where it is otherwise read from a model card
     if cfg.architecture == "dinov3" and "input_size_override" not in (cfg.model_kwargs or {}):
         warn(tag, "dinov3 takes its input size from the HF processor at runtime -- "
                   "pin input_size_override so a model-card update cannot change it mid-grid")
 
-    # 8. data
+    # 9. data
     check_data(cfg, tag)
 
 

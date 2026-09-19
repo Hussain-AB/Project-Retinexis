@@ -45,7 +45,10 @@ def seed_everything(seed: int = 42, deterministic: bool = True) -> None:
         # Required for some CUDA ops to be deterministic
         os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
         try:
-            torch.use_deterministic_algorithms(True)
+            # warn_only=True avoids hard crashes from ops like bicubic upsample
+            # (used by DINOv2 positional embedding interpolation) that have no
+            # deterministic CUDA kernel. All other reproducibility settings still apply.
+            torch.use_deterministic_algorithms(True, warn_only=True)
         except AttributeError:
             pass
     else:

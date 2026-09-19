@@ -32,6 +32,7 @@ def build_layer_wise_param_groups(
     lr_decay_factor: float,
     weight_decay: float,
     metadata_head: nn.Module | None = None,
+    extra_modules: list[nn.Module] | None = None,
 ) -> list[dict]:
     # review: true layer-wise decay — lr_i = base_lr * (factor ^ (N - i))
     # Head gets full base_lr, each backbone layer gets progressively less.
@@ -85,5 +86,17 @@ def build_layer_wise_param_groups(
             param_groups.append({"params": decay, "lr": layer_lr, "weight_decay": weight_decay})
         if no_decay:
             param_groups.append({"params": no_decay, "lr": layer_lr, "weight_decay": 0.0})
+
+    # Extra modules (e.g. vessel backbone in EfficientNetVessel) — full base_lr,
+    # no layer-wise decay. These are new branches that need to learn freely.
+    if extra_modules:
+        for module in extra_modules:
+            extra_decay, extra_no_decay = split_decay_or_no_decay(
+                [p for p in module.parameters() if p.requires_grad]
+            )
+            if extra_decay:
+                param_groups.append({"params": extra_decay, "lr": base_lr, "weight_decay": weight_decay})
+            if extra_no_decay:
+                param_groups.append({"params": extra_no_decay, "lr": base_lr, "weight_decay": 0.0})
 
     return param_groups
