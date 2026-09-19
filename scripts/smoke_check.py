@@ -90,8 +90,17 @@ def main() -> int:
         return 1
     print(f"run_dir: {rd}\n")
 
-    val = load_preds(rd / "val_predictions.csv", "val_predictions.csv")
-    inner = load_preds(rd / "inner_val_predictions.csv", "inner_val_predictions.csv")
+    # The trainer writes these under run_dir/predictions/ (see
+    # TrainConfig.val_predictions_path). Accept the run_dir root too, so an
+    # older layout still validates rather than reporting a false failure.
+    def find(name: str) -> Path:
+        for cand in (rd / "predictions" / name, rd / name):
+            if cand.exists():
+                return cand
+        return rd / "predictions" / name
+
+    val = load_preds(find("val_predictions.csv"), "val_predictions.csv")
+    inner = load_preds(find("inner_val_predictions.csv"), "inner_val_predictions.csv")
 
     if val is not None and inner is not None:
         vs, ins = set(val["sample_id"]), set(inner["sample_id"])
