@@ -43,7 +43,7 @@ weight_decay: 0.05
 min_lr: 1e-6
 
 # Loss
-use_weighted_bce: true
+use_weighted_bce: false
 pos_weight: null
 
 # Metadata

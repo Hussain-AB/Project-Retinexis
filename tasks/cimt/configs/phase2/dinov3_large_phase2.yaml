@@ -9,6 +9,7 @@ architecture: dinov3
 model_kwargs:
   variant: large
   pretrained: true
+  input_size_override: 224
 
 # Paths
 data_dir: data/cimt/Fundus_CIMT_2903_Dataset/images_preprocessed
@@ -47,7 +48,7 @@ weight_decay: 0.05
 min_lr: 1e-6
 
 # Loss
-use_weighted_bce: true
+use_weighted_bce: false
 pos_weight: null
 
 # Metadata

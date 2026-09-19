@@ -7,10 +7,11 @@ architecture: dinov3
 model_kwargs:
   variant: large
   pretrained: true
+  input_size_override: 224
 
 # Paths
 data_dir: data/hypertension_combined/images
-labels_csv: data/hypertension_combined/metadata_processed/combined_metadata.csv
+labels_csv: data/hypertension_combined/metadata_processed/combined_metadata_dedup.csv
 splits_file: tasks/hypertension/splits/hypertension_combined_5fold_splits.json
 output_dir: outputs_isbi
 
@@ -18,6 +19,7 @@ output_dir: outputs_isbi
 sample_id_col: image_id
 label_col: label
 patient_id_col: patient_id
+source_col: source_dataset
 
 # Cross-validation
 fold: 0
@@ -39,7 +41,7 @@ weight_decay: 0.05
 min_lr: 1e-6
 
 # Loss
-use_weighted_bce: true
+use_weighted_bce: false
 pos_weight: null
 
 # Metadata
