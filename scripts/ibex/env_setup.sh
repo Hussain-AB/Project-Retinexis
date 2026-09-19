@@ -72,10 +72,22 @@ if ! python -c "import sys" >/dev/null 2>&1; then
     return 1
 fi
 
-# Fail here rather than inside a queued job.
-if ! python -c "import torch" >/dev/null 2>&1; then
-    echo "[env_setup] ERROR: python runs but 'import torch' fails:" >&2
-    python -c "import torch" 2>&1 | tail -3 >&2
+# Fail here rather than inside a queued job. torch alone is not enough: a venv
+# with torch but no pandas/yaml dies five seconds into training, after the job
+# has already been scheduled onto a GPU.
+_MISSING="$(python - <<'PYCHK' 2>/dev/null
+import importlib.util as u
+need = ["torch","torchvision","yaml","numpy","pandas","PIL","sklearn","scipy",
+        "timm","transformers","huggingface_hub","tqdm","wandb"]
+print(" ".join(m for m in need if u.find_spec(m) is None))
+PYCHK
+)"
+if [ -n "${_MISSING}" ]; then
+    echo "[env_setup] ERROR: missing packages: ${_MISSING}" >&2
+    echo "[env_setup]   python: $(command -v python)" >&2
+    echo "[env_setup]   fix (on a LOGIN node, compute nodes have no network):" >&2
+    echo "[env_setup]     source scripts/ibex/env_setup.sh" >&2
+    echo "[env_setup]     pip install -r requirements.txt" >&2
     return 1
 fi
 
