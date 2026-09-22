@@ -257,6 +257,25 @@ def main() -> int:
         err("imports", f"{type(exc).__name__}: {exc} -- every job would fail at startup")
         print(f"import graph: FAILED ({type(exc).__name__}: {exc})\n")
 
+    # Two configs resolving to ONE run_dir is invisible everywhere else: the
+    # first job writes it, the second dies on the restart guard, and any tool
+    # that checks artifacts by path reports both as finished. That is exactly
+    # how cimt/retfound_dinov2 -- which declared architecture: dinov2 -- went
+    # eight jobs without ever training, while reporting DINOv2-L's numbers.
+    resolved: dict[str, list[str]] = {}
+    for cand in paths:
+        try:
+            raw = yaml.safe_load(cand.read_text()) or {}
+            raw.update(fold=0, seed=42)
+            rd = str(TrainConfig.from_dict(raw).run_dir)
+        except Exception:
+            continue
+        resolved.setdefault(rd, []).append(str(cand.relative_to(ROOT)))
+    for rd, owners in sorted(resolved.items()):
+        if len(owners) > 1:
+            err("run_dir", f"{len(owners)} configs resolve to the same run_dir {rd}: "
+                          f"{', '.join(owners)} -- check their dataset/architecture fields")
+
     print(f"checking {len(paths)} configs x {len(args.seeds)} seeds "
           f"({len(paths) * len(args.seeds)} jobs)\n")
     for p in paths:

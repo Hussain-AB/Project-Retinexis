@@ -30,6 +30,10 @@ cd "${PROJECT_ROOT}"
 
 DRY_RUN=0
 FOLD0_ONLY=0
+# Re-run a subset without disturbing finished runs, e.g. after fixing one
+# config:  --only-task cimt --only-model retfound_dinov2
+ONLY_TASK=""
+ONLY_MODEL=""
 THROTTLE=6
 # Left empty by default: Ibex resolves the account automatically, and
 # passing an explicit one is rejected with "Invalid account or
@@ -44,6 +48,8 @@ while [ $# -gt 0 ]; do
         --dry-run)     DRY_RUN=1 ;;
         --fold0-only)  FOLD0_ONLY=1 ;;
         --throttle)    THROTTLE="$2"; shift ;;
+        --only-task)   ONLY_TASK="$2"; shift ;;
+        --only-model)  ONLY_MODEL="$2"; shift ;;
         --account)     ACCOUNT="$2"; shift ;;
         *) echo "unknown argument: $1" >&2; exit 2 ;;
     esac
@@ -88,6 +94,8 @@ emit () {   # task model fold seed output_dir
         cimt)         cfgdir="tasks/cimt/configs/phase2" ;;
         hypertension) cfgdir="tasks/hypertension/configs/phase2" ;;
     esac
+    [ -n "${ONLY_TASK}"  ] && [ "${task}"  != "${ONLY_TASK}"  ] && return 0
+    [ -n "${ONLY_MODEL}" ] && [ "${model}" != "${ONLY_MODEL}" ] && return 0
     local cfg="${cfgdir}/${model}_phase2.yaml"
     [ -f "${cfg}" ] || { echo "missing config: ${cfg}" >&2; exit 1; }
     printf "%s\t%s\t%s\t%s\t%s\t%s\n" \

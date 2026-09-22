@@ -92,6 +92,17 @@ def main() -> int:
         else:
             missing.append(rec)
 
+    owners: dict[str, list[int]] = {}
+    for rec in complete + partial + missing:
+        owners.setdefault(str(rec["run_dir"]), []).append(rec["idx"])
+    shared = {k: v for k, v in owners.items() if len(v) > 1}
+    if shared:
+        print("  COLLISION: manifest rows share a run_dir, so their results are "
+              "the SAME run reported more than once:")
+        for rd, idxs in sorted(shared.items()):
+            print(f"    {rd}  <- rows {idxs}")
+        print()
+
     print(f"  complete : {len(complete):>3} / {len(rows)}")
     print(f"  partial  : {len(partial):>3}   (some artifacts, run did not finish)")
     print(f"  missing  : {len(missing):>3}   (no output at all)\n")
