@@ -156,6 +156,7 @@ def create_dataloaders(
     # Build vessel mask transform (if enabled)
     vessel_mask_dir = None
     vessel_transform = None
+    train_paired = eval_paired = None
     if getattr(config, "use_vessel_masks", False):
         vessel_cfg = getattr(model, "vessel_preprocessing_config", None)
         if vessel_cfg is None:
@@ -164,8 +165,13 @@ def create_dataloaders(
                 f"vessel_preprocessing_config property. Use architecture=efficientnet_vessel."
             )
         vessel_mask_dir = config.vessel_mask_dir
-        from src.data.transforms import build_vessel_transforms
+        from src.data.transforms import build_vessel_transforms, PairedTransform
         vessel_transform = build_vessel_transforms(vessel_cfg)
+        # One sampled geometry per item, shared by image and mask. Train only:
+        # val/inner-val draw nothing, so the independent path is equivalent there.
+        image_cfg = model.preprocessing_config
+        train_paired = PairedTransform(image_cfg, vessel_cfg, config, is_train=True)
+        eval_paired = PairedTransform(image_cfg, vessel_cfg, config, is_train=False)
 
     # Construct dataset instances
     train_dataset = DatasetClass(
@@ -180,6 +186,7 @@ def create_dataloaders(
         metadata_encoder=encoder,
         vessel_mask_dir=vessel_mask_dir,
         vessel_transform=vessel_transform,
+        paired_transform=(train_paired if vessel_mask_dir else None),
     )
     inner_val_dataset = DatasetClass(
         df=inner_val_df,
@@ -193,6 +200,7 @@ def create_dataloaders(
         metadata_encoder=encoder,
         vessel_mask_dir=vessel_mask_dir,
         vessel_transform=vessel_transform,
+        paired_transform=(eval_paired if vessel_mask_dir else None),
     )
     val_dataset = DatasetClass(
         df=val_df,
@@ -206,6 +214,7 @@ def create_dataloaders(
         metadata_encoder=encoder,
         vessel_mask_dir=vessel_mask_dir,
         vessel_transform=vessel_transform,
+        paired_transform=(eval_paired if vessel_mask_dir else None),
     )
 
     # Wrap in DataLoaders

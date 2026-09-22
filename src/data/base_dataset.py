@@ -50,6 +50,7 @@ from typing import TypedDict
 
 import numpy as np
 import pandas as pd
+from PIL import Image
 import torch
 from torch.utils.data import Dataset
 
@@ -231,6 +232,7 @@ class BaseRetinalDataset(Dataset, ABC):
         metadata_encoder: MetadataEncoder | None = None,
         vessel_mask_dir: str | None = None,
         vessel_transform: callable | None = None,
+        paired_transform: callable | None = None,
     ) -> None:
         """
         Args:
@@ -268,6 +270,7 @@ class BaseRetinalDataset(Dataset, ABC):
         self.metadata_encoder = metadata_encoder
         self.vessel_mask_dir = Path(vessel_mask_dir) if vessel_mask_dir else None
         self.vessel_transform = vessel_transform
+        self.paired_transform = paired_transform
 
         # Validate required columns exist
         if self.label_col not in self.df.columns:
@@ -293,6 +296,30 @@ class BaseRetinalDataset(Dataset, ABC):
                 f"source_col '{self.source_col}' not found in DataFrame. "
                 f"Available: {list(self.df.columns)}"
             )
+
+    def _transform_pair(self, image, mask_path=None):
+        """Apply the image and vessel-mask transforms under ONE geometry.
+
+        When paired_transform is set (vessel runs), the image and the mask
+        receive the same sampled hflip / rotation / scale. Without it they were
+        transformed by independent pipelines with independent draws, so a
+        mirrored image was paired with an unmirrored mask roughly half the
+        time -- the mask then described vessels on the wrong side of the retina.
+
+        Falls back to the independent path when no mask is involved, so
+        image-only runs are bit-identical to before.
+        """
+        if self.paired_transform is not None:
+            mask = None
+            if mask_path is not None:
+                mask = Image.open(mask_path).convert("RGB")
+            return self.paired_transform(image, mask)
+
+        image_t = self.transform(image)
+        mask_t = None
+        if mask_path is not None and self.vessel_transform is not None:
+            mask_t = self.vessel_transform(Image.open(mask_path).convert("RGB"))
+        return image_t, mask_t
 
     def _identity_fields(self, row) -> dict:
         """sample_id / patient_id / source_dataset for one row.

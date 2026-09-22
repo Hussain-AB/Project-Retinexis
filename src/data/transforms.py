@@ -205,6 +205,161 @@ def build_transforms(
     return T.Compose(transforms)
 
 
+# Paired (image + vessel mask) pipeline
+
+class GeometricDraw:
+    """One sampled geometric augmentation, reusable across branches.
+
+    The image and the vessel mask must undergo the SAME spatial transform.
+    Previously each branch ran its own Compose with its own random draws, so an
+    hflip on the image (p=0.5) left the mask unflipped half the time -- putting
+    the optic disc and the arteriovenous crossings on the opposite side of the
+    retina from the vessels the mask describes. Rotation and scale decorrelated
+    the same way.
+
+    Reseeding the RNG identically before each pipeline does NOT fix this: the
+    image pipeline also draws for ColorJitter and blur, so the two Composes
+    consume different numbers of random values and the draws do not line up.
+    The geometry has to be sampled once and passed to both, which is what this
+    class is for.
+    """
+
+    __slots__ = ("hflip", "angle", "scale")
+
+    def __init__(self, hflip: bool = False, angle: float = 0.0, scale: float = 1.0):
+        self.hflip = hflip
+        self.angle = angle
+        self.scale = scale
+
+    @classmethod
+    def sample(cls, config: object | None) -> "GeometricDraw":
+        """Draw from the same distributions _build_augmentation uses."""
+        hflip = bool(getattr(config, "aug_hflip", True)) and random.random() < 0.5
+
+        rotation = float(getattr(config, "aug_rotation", 10.0))
+        angle = random.uniform(-rotation, rotation) if rotation > 0 else 0.0
+
+        scale_min = float(getattr(config, "aug_scale_min", 0.98))
+        scale_max = float(getattr(config, "aug_scale_max", 1.02))
+        scale = random.uniform(scale_min, scale_max) if scale_max > scale_min else 1.0
+
+        return cls(hflip=hflip, angle=angle, scale=scale)
+
+    def is_identity(self) -> bool:
+        return not self.hflip and self.angle == 0.0 and self.scale == 1.0
+
+    def __call__(self, img: Image.Image) -> Image.Image:
+        if self.hflip:
+            img = TF.hflip(img)
+        if self.angle != 0.0:
+            img = TF.rotate(
+                img, self.angle,
+                interpolation=T.InterpolationMode.BILINEAR, fill=0,
+            )
+        if self.scale != 1.0:
+            img = TF.affine(
+                img, angle=0, translate=[0, 0], scale=self.scale, shear=[0, 0],
+                interpolation=T.InterpolationMode.BILINEAR, fill=0,
+            )
+        return img
+
+    def __repr__(self) -> str:
+        return f"GeometricDraw(hflip={self.hflip}, angle={self.angle:.3f}, scale={self.scale:.4f})"
+
+
+def _build_photometric(config: object | None) -> list:
+    """Colour and blur augmentation -- image branch only.
+
+    These do not move pixels, so they never need to be mirrored onto the mask,
+    and applying them to a mask would corrupt what it encodes.
+    """
+    augs = []
+    brightness = getattr(config, "aug_brightness", 0.05)
+    contrast = getattr(config, "aug_contrast", 0.05)
+    saturation = getattr(config, "aug_saturation", 0.0)
+    hue = getattr(config, "aug_hue", 0.0)
+    if any(v > 0 for v in [brightness, contrast, saturation, hue]):
+        augs.append(T.ColorJitter(
+            brightness=brightness, contrast=contrast,
+            saturation=saturation, hue=hue,
+        ))
+
+    blur_prob = getattr(config, "aug_blur_prob", 0.4)
+    blur_limit = getattr(config, "aug_blur_limit", 3)
+    if blur_prob > 0:
+        augs.append(RandomBlur(blur_limit=blur_limit, p=blur_prob))
+    return augs
+
+
+class PairedTransform:
+    """Transform an image and its vessel mask under one shared geometry.
+
+    Op order matches build_transforms exactly -- crop, resize, geometric,
+    photometric, ToTensor, Normalize, erasing -- so an image produced here is
+    distributed identically to one from the single-branch pipeline. Only the
+    source of the geometric randomness differs.
+
+    Call with mask=None to transform an image alone.
+    """
+
+    def __init__(
+        self,
+        image_config: PreprocessingConfig,
+        vessel_config: PreprocessingConfig | None = None,
+        config: object | None = None,
+        is_train: bool = False,
+    ) -> None:
+        self.image_config = image_config
+        self.vessel_config = vessel_config
+        self.config = config
+        self.is_train = is_train
+        self._photometric = _build_photometric(config) if is_train else []
+        self._erasing = None
+        if is_train:
+            prob = getattr(config, "aug_random_erasing", 0.0)
+            if prob and prob > 0:
+                self._erasing = T.RandomErasing(
+                    p=prob, scale=(0.02, 0.15), ratio=(0.3, 3.3), value=0,
+                )
+
+    def _branch(
+        self,
+        img: Image.Image,
+        cfg: PreprocessingConfig,
+        draw: GeometricDraw,
+        photometric: bool,
+    ) -> torch.Tensor:
+        crop = _CROP_STRATEGIES.get(cfg.crop_strategy)
+        if crop is not None:
+            img = crop()(img)
+        img = TF.resize(
+            img, [cfg.input_size, cfg.input_size],
+            interpolation=T.InterpolationMode.BICUBIC,
+        )
+        if not draw.is_identity():
+            img = draw(img)
+        if photometric:
+            for op in self._photometric:
+                img = op(img)
+        tensor = TF.to_tensor(img)
+        tensor = TF.normalize(tensor, mean=list(cfg.mean), std=list(cfg.std))
+        if photometric and self._erasing is not None:
+            tensor = self._erasing(tensor)
+        return tensor
+
+    def __call__(
+        self,
+        image: Image.Image,
+        mask: Image.Image | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
+        draw = GeometricDraw.sample(self.config) if self.is_train else GeometricDraw()
+        image_t = self._branch(image, self.image_config, draw, photometric=True)
+        if mask is None or self.vessel_config is None:
+            return image_t, None
+        mask_t = self._branch(mask, self.vessel_config, draw, photometric=False)
+        return image_t, mask_t
+
+
 def build_vessel_transforms(
     preprocessing_config: PreprocessingConfig,
 ) -> T.Compose:

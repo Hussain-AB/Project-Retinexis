@@ -28,11 +28,14 @@ class HypertensionDataset(BaseRetinalDataset):
         # In case some images don't exist during dry runs or buggy symlinks, 
         # it will throw FileNotFoundError here cleanly.
         image = Image.open(image_path).convert("RGB")
-        image = self.transform(image)
+        vessel_path = None
+        if self.vessel_mask_dir is not None:
+            vessel_path = self.vessel_mask_dir / rel_path
+        image_t, vessel_t = self._transform_pair(image, vessel_path)
 
         # Base dataset guarantees self.label_col and self.patient_id_col exist and default to "label" and "patient_id"
         sample: SampleDict = {
-            "image": image,
+            "image": image_t,
             "label": torch.tensor([float(row[self.label_col])], dtype=torch.float32),
             "image_path": str(image_path),
             **self._identity_fields(row),
@@ -40,10 +43,8 @@ class HypertensionDataset(BaseRetinalDataset):
 
         # RRWNet masks mirror the image layout (brset/<f>.jpg, odir/<f>.jpg),
         # so the same relative path resolves under vessel_mask_dir.
-        if self.vessel_mask_dir is not None and self.vessel_transform is not None:
-            vessel_path = self.vessel_mask_dir / rel_path
-            vessel_mask = Image.open(vessel_path).convert("RGB")
-            sample["vessel_mask"] = self.vessel_transform(vessel_mask)
+        if vessel_t is not None:
+            sample["vessel_mask"] = vessel_t
 
         if self.metadata_encoder is not None:
             sample["metadata"] = self.metadata_encoder.encode(row)
