@@ -123,6 +123,18 @@ class TrainConfig:
     use_vessel_masks: bool = False
     vessel_mask_dir: str = ""
 
+    # What the vessel branch actually receives. The architecture, parameter
+    # count and training are identical in all three cases -- only the content
+    # of the second branch's input changes, which is what makes the comparison
+    # a control rather than a confound.
+    #   "mask"     this image's own RRWNet vessel mask
+    #   "shuffled" another patient's mask, drawn from the same split by a
+    #              seeded derangement. Same texture and statistics, no spatial
+    #              correspondence with this eye.
+    #   "image"    a second copy of the fundus. Parameter-matched, but a second
+    #              view can help on its own, so read a null here carefully.
+    vessel_source: str = "mask"
+
     # Partial backbone warm-start
     # When set, the trainer loads only shape-matching keys from this
     # checkpoint into the model before training begins. Used to initialise
@@ -237,7 +249,13 @@ class TrainConfig:
         tag = f"fold_{self.fold}"
         if int(self.seed) != self.REFERENCE_SEED:
             tag = f"{tag}_seed{int(self.seed)}"
-        return Path(self.output_dir) / self.dataset / self.architecture / tag
+        arch = self.architecture
+        # The vessel arm and its two controls share one architecture. Without
+        # this they would resolve to one run_dir and overwrite each other --
+        # the failure that cost eight CIMT RETFound-DINOv2 jobs.
+        if self.use_vessel_masks and self.vessel_source != "mask":
+            arch = f"{arch}_{self.vessel_source}"
+        return Path(self.output_dir) / self.dataset / arch / tag
 
     @property
     def checkpoint_dir(self) -> Path:
@@ -351,6 +369,17 @@ class TrainConfig:
 
         if self.use_vessel_masks and not self.vessel_mask_dir:
             raise ValueError("use_vessel_masks=True but vessel_mask_dir is empty")
+
+        if self.vessel_source not in ("mask", "shuffled", "image"):
+            raise ValueError(
+                f"vessel_source must be 'mask', 'shuffled' or 'image', "
+                f"got {self.vessel_source!r}"
+            )
+        if self.vessel_source != "mask" and not self.use_vessel_masks:
+            raise ValueError(
+                f"vessel_source={self.vessel_source!r} has no effect unless "
+                f"use_vessel_masks=True"
+            )
 
         if self.num_workers < 0:
             raise ValueError(

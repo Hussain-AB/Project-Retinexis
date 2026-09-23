@@ -34,6 +34,10 @@ FOLD0_ONLY=0
 # config:  --only-task cimt --only-model retfound_dinov2
 ONLY_TASK=""
 ONLY_MODEL=""
+# core   = the 6-model grid over both tasks
+# vessel = the dual-stream arm and its two parameter-matched controls,
+#          hypertension only. Same 8-job design per configuration.
+ARM="core"
 THROTTLE=6
 # Left empty by default: Ibex resolves the account automatically, and
 # passing an explicit one is rejected with "Invalid account or
@@ -50,16 +54,35 @@ while [ $# -gt 0 ]; do
         --throttle)    THROTTLE="$2"; shift ;;
         --only-task)   ONLY_TASK="$2"; shift ;;
         --only-model)  ONLY_MODEL="$2"; shift ;;
+        --arm)         ARM="$2"; shift ;;
         --account)     ACCOUNT="$2"; shift ;;
         *) echo "unknown argument: $1" >&2; exit 2 ;;
     esac
     shift
 done
 
-MODELS=(efficientnet_b2 convnextv2 dinov3_large dinov2_large retfound_mae retfound_dinov2)
+case "${ARM}" in
+    core)
+        MODELS=(efficientnet_b2 convnextv2 dinov3_large dinov2_large retfound_mae retfound_dinov2)
+        TASKS=(cimt hypertension)
+        CFG_SUFFIX="_phase2.yaml"
+        CFG_SUBDIR="phase2"
+        OUT_BASE="outputs_isbi"
+        REP_BASE="outputs_isbi_rep"
+        ;;
+    vessel)
+        # treatment + two controls; identical architecture and parameter count,
+        # differing only in what the second branch receives
+        MODELS=(efficientnet_b2_vessel efficientnet_b2_vessel_shuffled efficientnet_b2_vessel_image)
+        TASKS=(hypertension)
+        CFG_SUFFIX=".yaml"
+        CFG_SUBDIR="vessel"
+        OUT_BASE="outputs_isbi_vessel"
+        REP_BASE="outputs_isbi_vessel_rep"
+        ;;
+    *) echo "unknown --arm: ${ARM} (expected core or vessel)" >&2; exit 2 ;;
+esac
 SEEDS=(42 1337 2024)
-OUT_BASE="outputs_isbi"
-REP_BASE="outputs_isbi_rep"     # the seed-42 replicate, for sigma_nondet
 GRID_DIR="${OUT_BASE}/_grid"
 LOG_DIR="${OUT_BASE}/_logs"
 STAMP="$(date +%Y%m%d_%H%M%S)"
@@ -91,12 +114,12 @@ emit () {   # task model fold seed output_dir
     local task="$1" model="$2" fold="$3" seed="$4" outdir="$5"
     local cfgdir
     case "${task}" in
-        cimt)         cfgdir="tasks/cimt/configs/phase2" ;;
-        hypertension) cfgdir="tasks/hypertension/configs/phase2" ;;
+        cimt)         cfgdir="tasks/cimt/configs/${CFG_SUBDIR}" ;;
+        hypertension) cfgdir="tasks/hypertension/configs/${CFG_SUBDIR}" ;;
     esac
     [ -n "${ONLY_TASK}"  ] && [ "${task}"  != "${ONLY_TASK}"  ] && return 0
     [ -n "${ONLY_MODEL}" ] && [ "${model}" != "${ONLY_MODEL}" ] && return 0
-    local cfg="${cfgdir}/${model}_phase2.yaml"
+    local cfg="${cfgdir}/${model}${CFG_SUFFIX}"
     [ -f "${cfg}" ] || { echo "missing config: ${cfg}" >&2; exit 1; }
     printf "%s\t%s\t%s\t%s\t%s\t%s\n" \
         "${task}" "${model}" "${fold}" "${seed}" "${outdir}" "${cfg}" >> "${MANIFEST}"
@@ -105,7 +128,7 @@ emit () {   # task model fold seed output_dir
 : > "${MANIFEST}"
 
 # Pass 1 -- fold 0 everywhere, all seeds, plus the seed-42 replicate.
-for task in cimt hypertension; do
+for task in "${TASKS[@]}"; do
     for model in "${MODELS[@]}"; do
         for seed in "${SEEDS[@]}"; do
             emit "${task}" "${model}" 0 "${seed}" "${OUT_BASE}"
@@ -116,7 +139,7 @@ done
 
 # Pass 2 -- folds 1-4 at the reference seed only.
 if [ "${FOLD0_ONLY}" -eq 0 ]; then
-    for task in cimt hypertension; do
+    for task in "${TASKS[@]}"; do
         for model in "${MODELS[@]}"; do
             for fold in 1 2 3 4; do
                 emit "${task}" "${model}" "${fold}" 42 "${OUT_BASE}"
@@ -138,7 +161,7 @@ fi
 
 # One array per (task, model) so --time can differ; rows are selected from the
 # shared manifest by their global index, so the manifest stays the one record.
-for task in cimt hypertension; do
+for task in "${TASKS[@]}"; do
     for model in "${MODELS[@]}"; do
         idx=$(awk -F'\t' -v t="${task}" -v m="${model}" \
               'ARGV[1]==FILENAME && $1==t && $2==m {printf "%s%d", sep, NR-1; sep=","}' "${MANIFEST}")
@@ -155,7 +178,7 @@ for task in cimt hypertension; do
         sbatch <<SBATCH
 #!/bin/bash
 ${acct_line}
-#SBATCH --job-name=isbi_${task}_${model}
+#SBATCH --job-name=isbi_${ARM}_${task}_${model}
 #SBATCH --array=${idx}%${THROTTLE}
 #SBATCH --output=${PROJECT_ROOT}/${LOG_DIR}/%x_%A_%a.out
 #SBATCH --error=${PROJECT_ROOT}/${LOG_DIR}/%x_%A_%a.err

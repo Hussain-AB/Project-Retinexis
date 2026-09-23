@@ -233,6 +233,8 @@ class BaseRetinalDataset(Dataset, ABC):
         vessel_mask_dir: str | None = None,
         vessel_transform: callable | None = None,
         paired_transform: callable | None = None,
+        vessel_source: str = "mask",
+        vessel_perm: object | None = None,
     ) -> None:
         """
         Args:
@@ -271,6 +273,8 @@ class BaseRetinalDataset(Dataset, ABC):
         self.vessel_mask_dir = Path(vessel_mask_dir) if vessel_mask_dir else None
         self.vessel_transform = vessel_transform
         self.paired_transform = paired_transform
+        self.vessel_source = vessel_source
+        self.vessel_perm = vessel_perm
 
         # Validate required columns exist
         if self.label_col not in self.df.columns:
@@ -297,6 +301,50 @@ class BaseRetinalDataset(Dataset, ABC):
                 f"Available: {list(self.df.columns)}"
             )
 
+    def _mask_relpath(self, row) -> str | None:
+        """Path of this row's vessel mask, relative to vessel_mask_dir.
+
+        Overridden per dataset because the column differs. Returning None
+        disables vessel loading for that dataset.
+        """
+        return None
+
+    def _vessel_companion(self, idx: int, image, row):
+        """The PIL image the vessel branch receives, or None.
+
+        Which one depends on vessel_source, and that is the whole point of the
+        control: the model, its parameter count and its training are identical
+        in all three cases, so a difference in score can only come from what
+        this function returns.
+        """
+        if self.vessel_mask_dir is None:
+            return None
+
+        if self.vessel_source == "image":
+            # Parameter-matched control: a second copy of the fundus. It goes
+            # through the vessel branch's own preprocessing, exactly as a mask
+            # would, so the branch itself is unchanged.
+            return image.copy()
+
+        if self.vessel_source == "shuffled":
+            # Another patient's mask, from the same split, chosen by a seeded
+            # derangement fixed at construction -- so it is identical on every
+            # epoch and reproducible from the run's seed, and never this
+            # image's own mask.
+            if self.vessel_perm is None:
+                raise ValueError(
+                    "vessel_source='shuffled' but no permutation was supplied; "
+                    "create_dataloaders builds it."
+                )
+            donor = self.df.iloc[int(self.vessel_perm[idx])]
+            rel = self._mask_relpath(donor)
+        else:
+            rel = self._mask_relpath(row)
+
+        if rel is None:
+            return None
+        return Image.open(self.vessel_mask_dir / rel).convert("RGB")
+
     def _transform_pair(self, image, mask_path=None):
         """Apply the image and vessel-mask transforms under ONE geometry.
 
@@ -309,16 +357,18 @@ class BaseRetinalDataset(Dataset, ABC):
         Falls back to the independent path when no mask is involved, so
         image-only runs are bit-identical to before.
         """
+        def _as_image(src):
+            if src is None or isinstance(src, Image.Image):
+                return src
+            return Image.open(src).convert("RGB")
+
         if self.paired_transform is not None:
-            mask = None
-            if mask_path is not None:
-                mask = Image.open(mask_path).convert("RGB")
-            return self.paired_transform(image, mask)
+            return self.paired_transform(image, _as_image(mask_path))
 
         image_t = self.transform(image)
         mask_t = None
         if mask_path is not None and self.vessel_transform is not None:
-            mask_t = self.vessel_transform(Image.open(mask_path).convert("RGB"))
+            mask_t = self.vessel_transform(_as_image(mask_path))
         return image_t, mask_t
 
     def _identity_fields(self, row) -> dict:

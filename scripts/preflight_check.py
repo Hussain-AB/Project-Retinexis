@@ -37,6 +37,7 @@ DEFAULT_GLOBS = [
 
 ERRORS: list[str] = []
 WARNS: list[str] = []
+PASSES_NOTE: list[str] = []
 
 
 def err(tag: str, msg: str) -> None:
@@ -187,13 +188,35 @@ def check_config(path: Path, seed: int) -> None:
                      f"BRSET codes gender '1'/'2' and ODIR 'Male'/'Female', so this "
                      f"one-hot encodes the source site as a feature")
 
-    # 5. vessel arm
+    # 5. vessel arm: the directory must exist AND cover every image the splits
+    #    reference. A missing mask is a FileNotFoundError thousands of steps
+    #    into training, on one worker, which is a miserable way to discover it.
     if cfg.use_vessel_masks:
         vd = ROOT / cfg.vessel_mask_dir
         if not vd.is_dir():
             err(tag, f"use_vessel_masks=true but vessel_mask_dir does not exist: {cfg.vessel_mask_dir}")
         elif not any(vd.iterdir()):
             err(tag, f"vessel_mask_dir is empty: {cfg.vessel_mask_dir}")
+        else:
+            labels = ROOT / cfg.labels_csv
+            if labels.exists():
+                df = pd.read_csv(labels)
+                relcol = next((c for c in ("relative_image_path", "filename", "image_filename")
+                               if c in df.columns), None)
+                if relcol is None:
+                    warn(tag, "cannot check mask coverage: no relative-path column in the labels CSV")
+                else:
+                    rels = df[relcol].astype(str).tolist()
+                    absent = [r for r in rels if not (vd / r).exists()]
+                    if absent:
+                        err(tag, f"{len(absent)} of {len(rels)} images have no vessel mask under "
+                                 f"{cfg.vessel_mask_dir} (e.g. {absent[:2]})")
+                    else:
+                        PASSES_NOTE.append(f"{tag}: vessel masks cover all {len(rels)} images")
+        if cfg.vessel_source != "mask":
+            PASSES_NOTE.append(
+                f"{tag}: CONTROL arm, vessel_source={cfg.vessel_source} "
+                f"(architecture and parameter count identical to the treatment)")
 
     # 6. warm-start checkpoints must not point at the discarded runs
     if cfg.checkpoint_path:
@@ -314,6 +337,8 @@ def main() -> int:
             print(line)
 
     print()
+    for n in PASSES_NOTE:
+        print(f"note  {n}")
     for w in WARNS:
         print(f"WARN  {w}")
     for e in ERRORS:

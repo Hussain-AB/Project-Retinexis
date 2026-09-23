@@ -15,6 +15,10 @@ class HypertensionDataset(BaseRetinalDataset):
     def __len__(self) -> int:
         return len(self.df)
 
+    def _mask_relpath(self, row) -> str | None:
+        rel = row.get("relative_image_path")
+        return str(rel) if rel else None
+
     def __getitem__(self, idx: int) -> SampleDict:
         row = self.df.iloc[idx]
 
@@ -28,10 +32,8 @@ class HypertensionDataset(BaseRetinalDataset):
         # In case some images don't exist during dry runs or buggy symlinks, 
         # it will throw FileNotFoundError here cleanly.
         image = Image.open(image_path).convert("RGB")
-        vessel_path = None
-        if self.vessel_mask_dir is not None:
-            vessel_path = self.vessel_mask_dir / rel_path
-        image_t, vessel_t = self._transform_pair(image, vessel_path)
+        companion = self._vessel_companion(idx, image, row)
+        image_t, vessel_t = self._transform_pair(image, companion)
 
         # Base dataset guarantees self.label_col and self.patient_id_col exist and default to "label" and "patient_id"
         sample: SampleDict = {

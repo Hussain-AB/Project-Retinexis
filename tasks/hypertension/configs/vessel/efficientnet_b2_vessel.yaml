@@ -1,0 +1,89 @@
+# efficientnet_b2_vessel
+#
+# TREATMENT. The vessel branch receives this image's own RRWNet mask.
+#
+# Not warm-started: backbone_checkpoint_path is unset, so the image branch
+# starts from ImageNet exactly as the core grid's EfficientNet-B2 did, and
+# the arm is trained the same way as the models it is compared against.
+#
+
+# Identity
+dataset: hypertension_combined
+architecture: efficientnet_vessel
+model_kwargs:
+  variant: b2
+  pretrained: true
+  drop_rate: 0.3
+
+# Paths
+data_dir: data/hypertension_combined/images
+labels_csv: data/hypertension_combined/metadata_processed/combined_metadata_dedup.csv
+splits_file: tasks/hypertension/splits/hypertension_combined_5fold_splits.json
+output_dir: outputs_isbi_vessel
+
+# Column mapping
+sample_id_col: image_id
+label_col: label
+patient_id_col: patient_id
+source_col: source_dataset
+
+# Cross-validation (run once per fold 0–4 for full CV)
+fold: 0
+
+# Skip Phase 1 — image backbone already trained; go straight to Phase 2
+skip_phase1: true
+phase1_epochs: 5
+phase1_lr: 1e-3
+phase1_batch_size: 32
+
+# Phase 2: full fine-tune
+phase2_epochs: 50
+phase2_lr: 5e-5
+phase2_batch_size: 16
+lr_decay_factor: 0.65
+warmup_epochs: 5
+patience: 7
+weight_decay: 0.05
+min_lr: 1e-6
+
+# Loss
+use_weighted_bce: false
+pos_weight: null
+
+# Vessel mask fusion (RRWNet output)
+use_vessel_masks: true
+vessel_mask_dir: data/hypertension_combined/vessel_masks
+vessel_source: mask
+
+# Metadata (disabled)
+use_metadata: false
+metadata_columns: []
+metadata_head_hidden: 0
+
+# Data loading
+num_workers: 4
+pin_memory: true
+persistent_workers: true
+prefetch_factor: 2
+
+# Augmentation (same as image-only — vessel masks NOT augmented, image only)
+aug_hflip: true
+aug_rotation: 10
+aug_scale_min: 0.98
+aug_scale_max: 1.02
+aug_brightness: 0.05
+aug_contrast: 0.05
+aug_saturation: 0.0
+aug_hue: 0.0
+aug_blur_prob: 0.4
+aug_blur_limit: 3
+aug_random_erasing: 0.0
+
+# Reproducibility
+seed: 42
+deterministic: true
+
+# Logging
+use_wandb: true
+wandb_project: retinexis
+wandb_entity: project_retinexis-king-s-college-london
