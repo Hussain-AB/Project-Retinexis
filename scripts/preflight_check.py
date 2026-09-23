@@ -37,6 +37,7 @@ DEFAULT_GLOBS = [
 
 ERRORS: list[str] = []
 WARNS: list[str] = []
+PASSES_NOTE: list[str] = []
 
 
 def err(tag: str, msg: str) -> None:
@@ -187,13 +188,35 @@ def check_config(path: Path, seed: int) -> None:
                      f"BRSET codes gender '1'/'2' and ODIR 'Male'/'Female', so this "
                      f"one-hot encodes the source site as a feature")
 
-    # 5. vessel arm
+    # 5. vessel arm: the directory must exist AND cover every image the splits
+    #    reference. A missing mask is a FileNotFoundError thousands of steps
+    #    into training, on one worker, which is a miserable way to discover it.
     if cfg.use_vessel_masks:
         vd = ROOT / cfg.vessel_mask_dir
         if not vd.is_dir():
             err(tag, f"use_vessel_masks=true but vessel_mask_dir does not exist: {cfg.vessel_mask_dir}")
         elif not any(vd.iterdir()):
             err(tag, f"vessel_mask_dir is empty: {cfg.vessel_mask_dir}")
+        else:
+            labels = ROOT / cfg.labels_csv
+            if labels.exists():
+                df = pd.read_csv(labels)
+                relcol = next((c for c in ("relative_image_path", "filename", "image_filename")
+                               if c in df.columns), None)
+                if relcol is None:
+                    warn(tag, "cannot check mask coverage: no relative-path column in the labels CSV")
+                else:
+                    rels = df[relcol].astype(str).tolist()
+                    absent = [r for r in rels if not (vd / r).exists()]
+                    if absent:
+                        err(tag, f"{len(absent)} of {len(rels)} images have no vessel mask under "
+                                 f"{cfg.vessel_mask_dir} (e.g. {absent[:2]})")
+                    else:
+                        PASSES_NOTE.append(f"{tag}: vessel masks cover all {len(rels)} images")
+        if cfg.vessel_source != "mask":
+            PASSES_NOTE.append(
+                f"{tag}: CONTROL arm, vessel_source={cfg.vessel_source} "
+                f"(architecture and parameter count identical to the treatment)")
 
     # 6. warm-start checkpoints must not point at the discarded runs
     if cfg.checkpoint_path:
@@ -257,6 +280,25 @@ def main() -> int:
         err("imports", f"{type(exc).__name__}: {exc} -- every job would fail at startup")
         print(f"import graph: FAILED ({type(exc).__name__}: {exc})\n")
 
+    # Two configs resolving to ONE run_dir is invisible everywhere else: the
+    # first job writes it, the second dies on the restart guard, and any tool
+    # that checks artifacts by path reports both as finished. That is exactly
+    # how cimt/retfound_dinov2 -- which declared architecture: dinov2 -- went
+    # eight jobs without ever training, while reporting DINOv2-L's numbers.
+    resolved: dict[str, list[str]] = {}
+    for cand in paths:
+        try:
+            raw = yaml.safe_load(cand.read_text()) or {}
+            raw.update(fold=0, seed=42)
+            rd = str(TrainConfig.from_dict(raw).run_dir)
+        except Exception:
+            continue
+        resolved.setdefault(rd, []).append(str(cand.relative_to(ROOT)))
+    for rd, owners in sorted(resolved.items()):
+        if len(owners) > 1:
+            err("run_dir", f"{len(owners)} configs resolve to the same run_dir {rd}: "
+                          f"{', '.join(owners)} -- check their dataset/architecture fields")
+
     print(f"checking {len(paths)} configs x {len(args.seeds)} seeds "
           f"({len(paths) * len(args.seeds)} jobs)\n")
     for p in paths:
@@ -295,6 +337,8 @@ def main() -> int:
             print(line)
 
     print()
+    for n in PASSES_NOTE:
+        print(f"note  {n}")
     for w in WARNS:
         print(f"WARN  {w}")
     for e in ERRORS:

@@ -65,6 +65,35 @@ def _seed_worker(worker_id: int) -> None:
     random.seed(seed)
 
 #  MAIN API
+def _derangement(n: int, seed: int) -> "np.ndarray":
+    """A permutation of 0..n-1 with no fixed point.
+
+    Used for vessel_source="shuffled": every image is paired with a DIFFERENT
+    image's vessel mask. Fixed at construction from the run's seed, so it is
+    the same on every epoch, reproducible from the manifest, and never pairs an
+    image with its own mask (which would silently turn the control back into
+    the treatment).
+    """
+    if n < 2:
+        return np.zeros(n, dtype=np.int64)
+    rng = np.random.default_rng(seed)
+    perm = rng.permutation(n)
+    # Repair fixed points by rotating them among themselves.
+    fixed = np.flatnonzero(perm == np.arange(n))
+    if fixed.size == 1:
+        j = fixed[0]
+        k = 0 if j != 0 else 1
+        perm[j], perm[k] = perm[k], perm[j]
+    elif fixed.size > 1:
+        perm[fixed] = perm[np.roll(fixed, 1)]
+        still = np.flatnonzero(perm == np.arange(n))
+        for j in still:
+            k = (j + 1) % n
+            perm[j], perm[k] = perm[k], perm[j]
+    assert not np.any(perm == np.arange(n)), "derangement still has a fixed point"
+    return perm
+
+
 def create_dataloaders(
     config: Any,
     model: BaseClassifier,
@@ -157,6 +186,7 @@ def create_dataloaders(
     vessel_mask_dir = None
     vessel_transform = None
     train_paired = eval_paired = None
+    vessel_source = getattr(config, "vessel_source", "mask")
     if getattr(config, "use_vessel_masks", False):
         vessel_cfg = getattr(model, "vessel_preprocessing_config", None)
         if vessel_cfg is None:
@@ -172,6 +202,7 @@ def create_dataloaders(
         image_cfg = model.preprocessing_config
         train_paired = PairedTransform(image_cfg, vessel_cfg, config, is_train=True)
         eval_paired = PairedTransform(image_cfg, vessel_cfg, config, is_train=False)
+        print(f"    Vessel:     source={vessel_source} dir={vessel_mask_dir}")
 
     # Construct dataset instances
     train_dataset = DatasetClass(
@@ -187,6 +218,9 @@ def create_dataloaders(
         vessel_mask_dir=vessel_mask_dir,
         vessel_transform=vessel_transform,
         paired_transform=(train_paired if vessel_mask_dir else None),
+        vessel_source=vessel_source,
+        vessel_perm=(_derangement(len(train_df), int(config.seed))
+                     if vessel_mask_dir and vessel_source == "shuffled" else None),
     )
     inner_val_dataset = DatasetClass(
         df=inner_val_df,
@@ -201,6 +235,9 @@ def create_dataloaders(
         vessel_mask_dir=vessel_mask_dir,
         vessel_transform=vessel_transform,
         paired_transform=(eval_paired if vessel_mask_dir else None),
+        vessel_source=vessel_source,
+        vessel_perm=(_derangement(len(inner_val_df), int(config.seed))
+                     if vessel_mask_dir and vessel_source == "shuffled" else None),
     )
     val_dataset = DatasetClass(
         df=val_df,
@@ -215,6 +252,9 @@ def create_dataloaders(
         vessel_mask_dir=vessel_mask_dir,
         vessel_transform=vessel_transform,
         paired_transform=(eval_paired if vessel_mask_dir else None),
+        vessel_source=vessel_source,
+        vessel_perm=(_derangement(len(val_df), int(config.seed))
+                     if vessel_mask_dir and vessel_source == "shuffled" else None),
     )
 
     # Wrap in DataLoaders

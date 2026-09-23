@@ -9,6 +9,10 @@ class CIMTDataset(BaseRetinalDataset):
     def __len__(self) -> int:
         return len(self.df)
 
+    def _mask_relpath(self, row) -> str | None:
+        name = row.get("filename") or row.get("image_filename")
+        return str(name) if name else None
+
     def __getitem__(self, idx: int) -> SampleDict:
         row = self.df.iloc[idx]
 
@@ -16,10 +20,8 @@ class CIMTDataset(BaseRetinalDataset):
         image_path = self.image_dir / filename
         image = Image.open(image_path).convert("RGB")
 
-        vessel_path = None
-        if self.vessel_mask_dir is not None:
-            vessel_path = self.vessel_mask_dir / filename
-        image_t, vessel_t = self._transform_pair(image, vessel_path)
+        companion = self._vessel_companion(idx, image, row)
+        image_t, vessel_t = self._transform_pair(image, companion)
 
         sample: SampleDict = {
             "image": image_t,
