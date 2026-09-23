@@ -89,6 +89,10 @@ def main() -> int:
     try:
         from src.data.loader import create_dataloaders
         from src.models.registry import MODEL_REGISTRY
+        # Dataset classes register themselves in DATASET_REGISTRY at import,
+        # exactly as scripts/train.py does at line 34. Without this the
+        # registry is empty and create_dataloaders cannot resolve the dataset.
+        import src.data.datasets  # noqa: F401
     except Exception as exc:  # noqa: BLE001
         print(f"  ERROR  cannot import the training stack: {exc}")
         return 1
@@ -103,7 +107,8 @@ def main() -> int:
         ds = tr.dataset
         row = ds.df.iloc[0]
         own = ds._mask_relpath(row)
-        comp = ds._vessel_companion(0, __import__("PIL.Image", fromlist=["Image"]).Image.new("RGB", (64, 64)), row)
+        from PIL import Image as _PILImage
+        comp = ds._vessel_companion(0, _PILImage.new("RGB", (64, 64)), row)
         check(comp is not None, f"{arm}: the vessel branch receives something",
               f"{arm}: companion is None -- the second branch would get nothing")
         img_t, msk_t = ds[0]["image"], ds[0].get("vessel_mask")

@@ -273,7 +273,8 @@ def main() -> int:
     try:
         import importlib
         for mod in ("src.data.transforms", "src.data.loader",
-                    "src.training.trainer", "src.models.base"):
+                    "src.data.datasets", "src.training.trainer",
+                    "src.models.base"):
             importlib.import_module(mod)
         print("import graph: scripts/train.py's modules all import\n")
     except Exception as exc:  # noqa: BLE001
