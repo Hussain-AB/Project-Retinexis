@@ -47,7 +47,8 @@ def signature(text: str) -> str:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--manifest", type=Path, default=None)
-    ap.add_argument("--logs", type=Path, default=ROOT / "outputs_isbi" / "_logs")
+    ap.add_argument("--logs", type=Path, default=None,
+                    help="defaults to <manifest tree>/_logs")
     ap.add_argument("--verbose", action="store_true")
     args = ap.parse_args()
 
@@ -57,7 +58,22 @@ def main() -> int:
             print("no manifest found under outputs_isbi/_grid/")
             return 1
         args.manifest = cands[-1]
-    print(f"manifest: {args.manifest.relative_to(ROOT)}\n")
+    # A --manifest given on the command line is relative; the auto-discovered
+    # one is absolute. relative_to() cannot mix the two, so normalise first.
+    args.manifest = Path(args.manifest).resolve()
+    if not args.manifest.is_file():
+        print(f"no such manifest: {args.manifest}")
+        return 1
+    try:
+        shown = args.manifest.relative_to(ROOT)
+    except ValueError:
+        shown = args.manifest
+    print(f"manifest: {shown}\n")
+
+    # Logs live beside the manifest's own output tree, not always outputs_isbi.
+    if args.logs is None:
+        args.logs = args.manifest.parent.parent / "_logs"
+    args.logs = Path(args.logs).resolve()
 
     rows = [l.split("\t") for l in args.manifest.read_text().splitlines() if l.strip()]
 
