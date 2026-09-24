@@ -88,7 +88,13 @@ LOG_DIR="${OUT_BASE}/_logs"
 STAMP="$(date +%Y%m%d_%H%M%S)"
 MANIFEST="${GRID_DIR}/manifest_${STAMP}.tsv"
 
-mkdir -p "${GRID_DIR}" "${LOG_DIR}"
+# A dry run must change nothing on disk, so its manifest goes to a temp file
+# that is removed before exit. Only a real submission leaves a record behind.
+if [ "${DRY_RUN}" -eq 1 ]; then
+    MANIFEST="$(mktemp "${TMPDIR:-/tmp}/isbi-dryrun-XXXXXX.tsv")"
+else
+    mkdir -p "${GRID_DIR}" "${LOG_DIR}"
+fi
 
 # --- wall-clock ceilings -----------------------------------------------------
 # Worst case = phase2_epochs (50) x measured per-epoch cost, never early
@@ -155,7 +161,8 @@ awk -F'\t' '{printf "  %-4d %-13s %-17s fold %s  seed %-5s -> %s\n", NR-1, $1, $
 echo
 
 if [ "${DRY_RUN}" -eq 1 ]; then
-    echo "dry run -- nothing submitted. Rerun without --dry-run to queue."
+    rm -f "${MANIFEST}"
+    echo "dry run -- nothing submitted, no manifest written."
     exit 0
 fi
 
