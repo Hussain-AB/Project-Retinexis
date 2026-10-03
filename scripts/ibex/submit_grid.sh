@@ -34,10 +34,19 @@ FOLD0_ONLY=0
 # config:  --only-task cimt --only-model retfound_dinov2
 ONLY_TASK=""
 ONLY_MODEL=""
-# core   = the 6-model grid over both tasks
-# vessel = the dual-stream arm and its two parameter-matched controls,
-#          hypertension only. Same 8-job design per configuration.
+# core       = the 6-model grid over both tasks
+# vessel     = the dual-stream arm and its two parameter-matched controls,
+#              hypertension only. Same 8-job design per configuration.
+# resolution = DINOv2-L at 224/336 (native 504) and ConvNeXtV2-B at 448 (native
+#              224), both tasks, same 8-job design, so resolution is varied
+#              WITHIN a model rather than confounded with it.
+# wbce       = EfficientNet-B2 with the weighted loss back on, both tasks,
+#              5 folds at seed 42 -- isolates the loss as the cause of the
+#              calibration change.
+# Configs for resolution and wbce come from scripts/make_ablation_configs.py.
 ARM="core"
+PER_MODEL_OUT=0
+DESIGN="full"     # full = fold 0 x 3 seeds + replicate, then folds 1-4; folds = 0-4 at seed 42
 THROTTLE=6
 # Left empty by default: Ibex resolves the account automatically, and
 # passing an explicit one is rejected with "Invalid account or
@@ -80,7 +89,31 @@ case "${ARM}" in
         OUT_BASE="outputs_isbi_vessel"
         REP_BASE="outputs_isbi_vessel_rep"
         ;;
-    *) echo "unknown --arm: ${ARM} (expected core or vessel)" >&2; exit 2 ;;
+    resolution)
+        MODELS=(dinov2_large_res224 dinov2_large_res336 convnextv2_res448)
+        TASKS=(cimt hypertension)
+        CFG_SUFFIX=".yaml"
+        CFG_SUBDIR="resolution"
+        OUT_BASE="outputs_isbi_res"
+        REP_BASE="outputs_isbi_res_rep"
+        # dinov2_large_res224 and _res336 share architecture "dinov2", so in one
+        # tree they would resolve to ONE run_dir and the second would die on the
+        # restart guard -- exactly how cimt/retfound_dinov2 lost eight jobs. Each
+        # configuration gets its own subdirectory instead.
+        PER_MODEL_OUT=1
+        ;;
+    wbce)
+        MODELS=(efficientnet_b2_wbce)
+        TASKS=(cimt hypertension)
+        CFG_SUFFIX=".yaml"
+        CFG_SUBDIR="wbce"
+        OUT_BASE="outputs_isbi_wbce"
+        REP_BASE="outputs_isbi_wbce_rep"
+        # 5 folds at seed 42, paired fold-for-fold against the core grid's
+        # EfficientNet-B2. No seed or replicate rows.
+        DESIGN="folds"
+        ;;
+    *) echo "unknown --arm: ${ARM} (expected core, vessel, resolution or wbce)" >&2; exit 2 ;;
 esac
 SEEDS=(42 1337 2024)
 GRID_DIR="${OUT_BASE}/_grid"
@@ -112,6 +145,18 @@ time_for () {   # task model -> HH:MM:SS
         cimt:retfound_dinov2)         echo "24:00:00" ;;
         cimt:dinov2_large)            echo "20:00:00" ;;
         cimt:retfound_mae)            echo "16:00:00" ;;
+        # resolution arm: scaled from measured s/epoch at native resolution
+        # (DINOv2-L@504 ~2480 s, ConvNeXtV2-B@224 ~158 s on hypertension), worst
+        # case 50 epochs. CIMT has ~0.28x the training images.
+        hypertension:dinov2_large_res336) echo "24:00:00" ;;
+        hypertension:dinov2_large_res224) echo "12:00:00" ;;
+        hypertension:convnextv2_res448)   echo "16:00:00" ;;
+        cimt:dinov2_large_res336)         echo "08:00:00" ;;
+        cimt:dinov2_large_res224)         echo "04:00:00" ;;
+        cimt:convnextv2_res448)           echo "06:00:00" ;;
+        # EfficientNet-B2 measured at ~44 s/epoch on hypertension
+        hypertension:efficientnet_b2_wbce) echo "04:00:00" ;;
+        cimt:efficientnet_b2_wbce)         echo "02:00:00" ;;
         *)                            echo "12:00:00" ;;
     esac
 }
@@ -127,12 +172,23 @@ emit () {   # task model fold seed output_dir
     [ -n "${ONLY_MODEL}" ] && [ "${model}" != "${ONLY_MODEL}" ] && return 0
     local cfg="${cfgdir}/${model}${CFG_SUFFIX}"
     [ -f "${cfg}" ] || { echo "missing config: ${cfg}" >&2; exit 1; }
+    [ "${PER_MODEL_OUT}" -eq 1 ] && outdir="${outdir}/${model}"
     printf "%s\t%s\t%s\t%s\t%s\t%s\n" \
         "${task}" "${model}" "${fold}" "${seed}" "${outdir}" "${cfg}" >> "${MANIFEST}"
 }
 
 : > "${MANIFEST}"
 
+if [ "${DESIGN}" = "folds" ]; then
+    # One row per fold at the reference seed; nothing else.
+    for task in "${TASKS[@]}"; do
+        for model in "${MODELS[@]}"; do
+            for fold in 0 1 2 3 4; do
+                emit "${task}" "${model}" "${fold}" 42 "${OUT_BASE}"
+            done
+        done
+    done
+else
 # Pass 1 -- fold 0 everywhere, all seeds, plus the seed-42 replicate.
 for task in "${TASKS[@]}"; do
     for model in "${MODELS[@]}"; do
@@ -142,9 +198,10 @@ for task in "${TASKS[@]}"; do
         emit "${task}" "${model}" 0 42 "${REP_BASE}"
     done
 done
+fi
 
 # Pass 2 -- folds 1-4 at the reference seed only.
-if [ "${FOLD0_ONLY}" -eq 0 ]; then
+if [ "${DESIGN}" = "full" ] && [ "${FOLD0_ONLY}" -eq 0 ]; then
     for task in "${TASKS[@]}"; do
         for model in "${MODELS[@]}"; do
             for fold in 1 2 3 4; do
@@ -157,7 +214,7 @@ fi
 N=$(wc -l < "${MANIFEST}")
 echo "manifest: ${MANIFEST}  (${N} jobs)"
 echo
-awk -F'\t' '{printf "  %-4d %-13s %-17s fold %s  seed %-5s -> %s\n", NR-1, $1, $2, $3, $4, $5}' "${MANIFEST}"
+awk -F'\t' '{printf "  %-4d %-13s %-22s fold %s  seed %-5s -> %s\n", NR-1, $1, $2, $3, $4, $5}' "${MANIFEST}"
 echo
 
 if [ "${DRY_RUN}" -eq 1 ]; then
