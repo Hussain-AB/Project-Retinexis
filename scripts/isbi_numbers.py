@@ -7,7 +7,8 @@ Companion to scripts/isbi_stats.py (whose loaders and metric definitions it
 reuses unchanged). Where isbi_stats.py writes the tables the paper argues from,
 this writes EVERYTHING: one row per run with every metric, fold-mean summaries
 with patient-bootstrap CIs for every metric, every paired comparison for every
-metric, training noise, dataset counts and cost. CSV files only; no plots.
+metric, training noise, dataset counts and cost; and, when the run folders carry them (they do on IBEX), the
+per-epoch training logs, SLURM job logs and resolved configs. CSV files only.
 
 Bootstrap
 ---------
@@ -237,6 +238,123 @@ def comparison_pairs(task: str, labels: set) -> list[tuple[str, tuple, tuple]]:
     return [p for p in pairs if p[1] in labels and p[2] in labels]
 
 
+# ----------------------------------------------------------------------------
+# training history, SLURM logs and resolved configs (present on IBEX; optional)
+# ----------------------------------------------------------------------------
+ID = ["arm", "config", "task", "fold", "seed", "role"]
+
+
+def history_tables(root: Path, per: pd.DataFrame):
+    """Per-epoch log for every run plus a per-run summary. 'val_*' in
+    training_log.csv is the INNER-validation split (model selection)."""
+    import json
+    long, summ = [], []
+    for r in per.itertuples():
+        f = root / r.run_dir / "logs" / "training_log.csv"
+        if not f.exists():
+            continue
+        d = pd.read_csv(f)
+        m = json.loads((root / r.run_dir / "run_manifest.json").read_text())
+        long.append(d.assign(**{k: getattr(r, k) for k in ID}, run_dir=r.run_dir))
+        md = m.get("min_delta", 0.001) or 0.0
+        best, be = -np.inf, None                       # trainer rule: > best + min_delta
+        for e, a in zip(d.epoch, d.val_auroc):
+            if a > best + md:
+                best, be = a, e
+        b = d[d.epoch == m["epoch_of_best"]].iloc[0]
+        last = d.iloc[-1]
+        imin = d.val_loss.idxmin()
+        summ.append(dict(
+            **{k: getattr(r, k) for k in ID}, input_size=r.input_size,
+            epochs_run=len(d), epoch_of_best=int(m["epoch_of_best"]),
+            epochs_after_best=int(last.epoch - m["epoch_of_best"]),
+            patience=m.get("patience"), epoch_cap=m.get("phase2_epochs_cap"),
+            stopped_by=("epoch cap" if len(d) >= (m.get("phase2_epochs_cap") or 10**9)
+                        else "early stopping" if last.epoch - m["epoch_of_best"] >= (m.get("patience") or 0)
+                        else "other"),
+            inner_auroc_at_best=b.val_auroc, inner_auprc_at_best=b.val_auprc,
+            inner_ece_at_best=b.val_ece, inner_loss_at_best=b.val_loss,
+            train_loss_at_best=b.train_loss, lr_at_best=b.lr,
+            inner_auroc_max=d.val_auroc.max(), epoch_of_max_inner_auroc=int(d.epoch[d.val_auroc.idxmax()]),
+            inner_auroc_epoch0=d.val_auroc.iloc[0], inner_auroc_last=last.val_auroc,
+            inner_loss_min=d.val_loss.min(), epoch_of_min_inner_loss=int(d.epoch[imin]),
+            train_loss_first=d.train_loss.iloc[0], train_loss_last=last.train_loss,
+            inner_loss_last=last.val_loss, loss_gap_last=last.val_loss - last.train_loss,
+            lr_peak=d.lr.max(), lr_last=last.lr,
+            epoch_sec_first=d.elapsed_sec.iloc[0], epoch_sec_median=d.elapsed_sec.median(),
+            epoch_sec_total=d.elapsed_sec.sum(), wall_clock_sec=m.get("wall_clock_sec"),
+            chk_epoch_of_best=int(be != m["epoch_of_best"]),
+            chk_inner_auroc_vs_manifest=abs(b.val_auroc - (m.get("inner_val_metrics") or {}).get("auroc", np.nan))))
+    if not summ:
+        return None, None
+    hl = pd.concat(long, ignore_index=True)
+    hl = hl[ID + [c for c in hl.columns if c not in ID + ["run_dir"]] + ["run_dir"]]
+    return hl, pd.DataFrame(summ)
+
+
+def slurm_table(root: Path) -> pd.DataFrame | None:
+    import re
+    rows = []
+    for f in sorted(root.glob("outputs_isbi*/_logs/*.out")):
+        t = f.read_text(errors="replace")
+        e = f.with_suffix(".err")
+        et = e.read_text(errors="replace") if e.exists() else ""
+        g = lambda pat: (re.search(pat, t, re.M).group(1).strip() if re.search(pat, t, re.M) else None)  # noqa: E731
+        row = g(r"manifest row (\d+):")
+        mrow = re.search(r"manifest row \d+:\s*(\S+)\s+(\S+)\s+(\d+)\s+(\d+)\s+(\S+)\s+(\S+)", t)
+        err = re.findall(r"^(\w*(?:Error|Exception)[^\n]*)", et, re.M)
+        params = g(r"Model:\s+\S+ \(([\d,]+) params\)")
+        trainable = g(r"Trainable params: ([\d,]+)")
+        done = re.search(r"^done: ", t, re.M) is not None
+        rows.append(dict(
+            log=f.relative_to(root).as_posix(), slurm_job=g(r"^ job (\d+)"), array_index=int(row) if row else None,
+            task=mrow.group(1) if mrow else None, model=mrow.group(2) if mrow else None,
+            fold=int(mrow.group(3)) if mrow else None, seed=int(mrow.group(4)) if mrow else None,
+            out_tree=mrow.group(5) if mrow else None, config_file=mrow.group(6) if mrow else None,
+            node=g(r"node (\S+)"), gpu=g(r"^ gpu\s+(.+)$"), git_sha=(g(r"^ git\s+(\S+)") or "")[:12],
+            output=g(r"Output: (\S+)"), input_px=g(r"Input:\s+(\d+)px"),
+            params=int(params.replace(",", "")) if params else None,
+            trainable_params=int(trainable.replace(",", "")) if trainable else None,
+            train_samples=g(r"Train:\s+(\d+) samples"), inner_samples=g(r"Inner val:\s+(\d+) samples"),
+            test_samples=g(r"Val:\s+(\d+) samples"),
+            minutes=float(g(r"Done in ([\d.]+) minutes")) if g(r"Done in ([\d.]+) minutes") else None,
+            status="completed" if done else ("refused: run folder already had best.pt"
+                                             if "already exists and no --checkpoint_path" in et
+                                             else "failed"),
+            error=err[-1][:200] if (err and not done) else None,
+            warn_nondet_attention=int("Memory Efficient attention defaults to a non-deterministic" in et),
+            warn_nondet_bicubic=int("upsample_bicubic2d_backward_out_cuda does not have a deterministic" in et)))
+    return pd.DataFrame(rows) if rows else None
+
+
+def config_table(root: Path, per: pd.DataFrame) -> pd.DataFrame | None:
+    try:
+        import yaml
+    except ImportError:
+        return None
+    vary = {"fold", "seed", "output_dir", "checkpoint_path"}
+    out = []
+    for (arm, cfg, task), g in per.groupby(["arm", "config", "task"]):
+        cfgs = []
+        for r in g.itertuples():
+            f = root / r.run_dir / "config_resolved.yaml"
+            if f.exists():
+                c = yaml.safe_load(f.read_text()) or {}
+                mk = c.pop("model_kwargs", {}) or {}
+                c.update({f"model_kwargs.{k}": v for k, v in mk.items()})
+                cfgs.append(c)
+        if not cfgs:
+            continue
+        keys = sorted(set().union(*cfgs) - vary)
+        differ = [k for k in keys if len({repr(c.get(k)) for c in cfgs}) > 1]
+        row = dict(arm=arm, config=cfg, task=task, runs_with_config=len(cfgs),
+                   fields_that_differ_between_runs=", ".join(differ) or "none")
+        row.update({k: (repr(cfgs[0].get(k)) if isinstance(cfgs[0].get(k), (list, dict))
+                        else cfgs[0].get(k)) for k in keys})
+        out.append(row)
+    return pd.DataFrame(out)
+
+
 def main() -> int:
     ap_ = argparse.ArgumentParser()
     ap_.add_argument("--root", type=Path, default=Path(__file__).resolve().parents[1])
@@ -339,6 +457,26 @@ def main() -> int:
                  input_size=("input_size", "first"), gpu=("gpu", "first"))
             .reset_index())
     cost.to_csv(a.out / "cost.csv", index=False)
+
+    hl, hs = history_tables(a.root, per)
+    if hs is not None:
+        hl.to_csv(a.out / "history_long.csv", index=False)
+        hs.to_csv(a.out / "history_summary.csv", index=False)
+        print(f"history: {len(hs)} runs, {len(hl)} epochs; epoch_of_best mismatches "
+              f"{int(hs.chk_epoch_of_best.sum())}, max |inner AUROC - manifest| "
+              f"{hs.chk_inner_auroc_vs_manifest.max():.1e}", flush=True)
+    else:
+        print("history: no logs/training_log.csv found -- skipped", flush=True)
+    sl = slurm_table(a.root)
+    if sl is not None:
+        sl.to_csv(a.out / "slurm_jobs.csv", index=False)
+        print(f"slurm: {len(sl)} job logs, " + ", ".join(f"{k}: {v}" for k, v in
+              sl.status.value_counts().items()), flush=True)
+    ct = config_table(a.root, per)
+    if ct is not None and len(ct):
+        ct.to_csv(a.out / "configs.csv", index=False)
+        print(f"configs: {len(ct)} configurations; inconsistent within a configuration: "
+              f"{int((ct.fields_that_differ_between_runs != 'none').sum())}", flush=True)
 
     chk = per.filter(like="chk_").max()
     print("max |recomputed - manifest|:\n" + chk.to_string(), flush=True)
