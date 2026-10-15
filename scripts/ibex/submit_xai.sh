@@ -5,13 +5,14 @@
 #   bash scripts/ibex/submit_xai.sh                    # submit everything
 #   bash scripts/ibex/submit_xai.sh --stage main --only-task cimt
 #
-# Stages (default: all)
-#   main      every model x fold 0-4, seed 42, all held-out images     60 jobs
-#   ceiling   fold 0: seeds 1337 and 2024 + the exact seed-42 repeat   36 jobs
-#             (is cross-model disagreement bigger than retraining noise?)
-#   randinit  fold 0, 500 images, freshly initialised weights          12 jobs
-#             (model-randomisation null: what the maps look like when
-#              nothing has been learned)
+# Stages (default: all). Grad-CAM is cheap, so it covers every held-out image;
+# IG needs many integration steps (completeness), so it runs on a fixed,
+# label-stratified subset of fold 0 -- the SAME images for every model and null.
+#   gradcam          every model x fold 0-4, seed 42, all images, Grad-CAM     60 jobs
+#   gradcam-ceiling  fold 0: seeds 1337, 2024 and the exact seed-42 repeat    36 jobs
+#   ig               fold 0, seed 42, N_IG images, IG with IG_STEPS steps     12 jobs
+#   ig-ceiling       fold 0, seed 1337, same images, IG                       12 jobs
+#   randinit         fold 0, random weights, same images, Grad-CAM + IG       12 jobs
 #
 # Resumable: re-running this script resubmits only (task, model, run) folders
 # without a DONE file, and a restarted job skips finished chunks.
@@ -20,6 +21,7 @@
 #   GPU_CONSTRAINT=a100   add --constraint (empty by default)
 #   THROTTLE=8            max array tasks running at once
 #   OUT_ROOT=outputs/xai_full
+#   N_IG=500  IG_STEPS=128
 #   VESSEL_CIMT=data/cimt/vessel_masks
 #   VESSEL_HYPERTENSION=<read from tasks/hypertension/configs/vessel/efficientnet_b2_vessel.yaml>
 set -euo pipefail
@@ -43,6 +45,8 @@ while [ $# -gt 0 ]; do
 done
 
 OUT_ROOT="${OUT_ROOT:-outputs/xai_full}"
+N_IG="${N_IG:-500}"
+IG_STEPS="${IG_STEPS:-128}"
 THROTTLE="${THROTTLE:-8}"
 GPU_CONSTRAINT="${GPU_CONSTRAINT:-}"
 VESSEL_CIMT="${VESSEL_CIMT:-data/cimt/vessel_masks}"
@@ -59,12 +63,14 @@ done
 MODELS=(retfound_dinov2 retfound_mae dinov2_large dinov3_large convnextv2 efficientnet_b2)
 TASKS=(cimt hypertension)
 
-time_for () {   # task model -> HH:MM:SS. IG dominates; the 500 px ViTs are ~4x the rest.
-    case "$1:$2" in
-        hypertension:dinov2_large|hypertension:retfound_dinov2) echo "12:00:00" ;;
-        hypertension:*)                                         echo "06:00:00" ;;
-        cimt:dinov2_large|cimt:retfound_dinov2)                 echo "05:00:00" ;;
-        *)                                                      echo "03:00:00" ;;
+time_for () {   # kind task model -> HH:MM:SS (measured on a V100: Grad-CAM + regions
+                #  ~0.5-1.5 s/img; IG ~0.2 s/img/step for the ~500 px ViTs)
+    case "$1:$2:$3" in
+        gradcam:hypertension:dinov2_large|gradcam:hypertension:retfound_dinov2) echo "05:00:00" ;;
+        gradcam:hypertension:*)                                                 echo "03:00:00" ;;
+        gradcam:cimt:*)                                                         echo "02:00:00" ;;
+        ig:*:dinov2_large|ig:*:retfound_dinov2)                                 echo "16:00:00" ;;
+        ig:*)                                                                   echo "06:00:00" ;;
     esac
 }
 dataset_dir () { [ "$1" = "hypertension" ] && echo "hypertension_combined" || echo "cimt"; }
@@ -82,8 +88,17 @@ STAMP="$(date +%Y%m%d_%H%M%S)"
 MANIFEST="${GRID}/manifest_${STAMP}.tsv"
 : > "${MANIFEST}"
 
-emit () {   # task model fold seed tree extra_args done_tag
-    local task=$1 model=$2 fold=$3 seed=$4 tree=$5 extra=$6 tag=$7
+emit () {   # task model fold seed tree kind(gradcam|ig|randinit)
+    local task=$1 model=$2 fold=$3 seed=$4 tree=$5 kind=$6
+    local extra tag base="fold${fold}_seed${seed}"
+    [ "${tree}" = "outputs_isbi_rep" ] && base="${base}_rep"
+    case "${kind}" in
+        gradcam)  extra="--methods gradcam"; tag="${base}__gradcam" ;;
+        ig)       extra="--methods ig --limit ${N_IG} --ig-steps ${IG_STEPS}"
+                  tag="${base}__ig_n${N_IG}_ig${IG_STEPS}" ;;
+        randinit) extra="--random-init --methods gradcam ig --limit ${N_IG} --ig-steps ${IG_STEPS}"
+                  tag="${base}_randinit__gradcam+ig_n${N_IG}_ig${IG_STEPS}" ;;
+    esac
     [ -n "${ONLY_TASK}" ] && [ "${task}" != "${ONLY_TASK}" ] && return 0
     [ -n "${ONLY_MODEL}" ] && [ "${model}" != "${ONLY_MODEL}" ] && return 0
     local sfx=""; [ "${seed}" != "42" ] && sfx="_seed${seed}"
@@ -93,23 +108,25 @@ emit () {   # task model fold seed tree extra_args done_tag
     fi
     [ -f "${OUT_ROOT}/${task}/${model}/${tag}/DONE" ] && return 0
     local vd="${VESSEL_CIMT}"; [ "${task}" = "hypertension" ] && vd="${VESSEL_HYPERTENSION}"
+    local tk="gradcam"; [ "${kind}" != "gradcam" ] && tk="ig"
     printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n" "${task}" "${model}" "${fold}" "${seed}" "${tree}" \
-        "${vd}" "${extra}" "$(time_for "${task}" "${model}")" >> "${MANIFEST}"
+        "${vd}" "${extra}" "$(time_for "${tk}" "${task}" "${model}")" >> "${MANIFEST}"
 }
 
 for task in "${TASKS[@]}"; do
     for model in "${MODELS[@]}"; do
-        if [ "${STAGE}" = "all" ] || [ "${STAGE}" = "main" ]; then
-            for fold in 0 1 2 3 4; do emit "${task}" "${model}" "${fold}" 42 outputs_isbi "-" "fold${fold}_seed42"; done
+        want () { [ "${STAGE}" = "all" ] || [ "${STAGE}" = "$1" ]; }
+        if want gradcam; then
+            for fold in 0 1 2 3 4; do emit "${task}" "${model}" "${fold}" 42 outputs_isbi gradcam; done
         fi
-        if [ "${STAGE}" = "all" ] || [ "${STAGE}" = "ceiling" ]; then
-            emit "${task}" "${model}" 0 1337 outputs_isbi "-" "fold0_seed1337"
-            emit "${task}" "${model}" 0 2024 outputs_isbi "-" "fold0_seed2024"
-            emit "${task}" "${model}" 0 42 outputs_isbi_rep "-" "fold0_seed42_rep"
+        if want gradcam-ceiling; then
+            emit "${task}" "${model}" 0 1337 outputs_isbi gradcam
+            emit "${task}" "${model}" 0 2024 outputs_isbi gradcam
+            emit "${task}" "${model}" 0 42 outputs_isbi_rep gradcam
         fi
-        if [ "${STAGE}" = "all" ] || [ "${STAGE}" = "randinit" ]; then
-            emit "${task}" "${model}" 0 42 outputs_isbi "--random-init --limit 500" "fold0_seed42_randinit"
-        fi
+        want ig         && emit "${task}" "${model}" 0 42 outputs_isbi ig
+        want ig-ceiling && emit "${task}" "${model}" 0 1337 outputs_isbi ig
+        want randinit   && emit "${task}" "${model}" 0 42 outputs_isbi randinit
     done
 done
 

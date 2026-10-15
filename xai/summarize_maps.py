@@ -141,8 +141,10 @@ def load(out_root: Path):
             x = pd.read_csv(f, dtype={"sample_id": str})
             if len(x):
                 rads.append(x.assign(**key))
-        maps[(info["task"], info["model"], int(info["fold"]), int(info["seed"]), role)] = sorted(
-            d.glob("chunk_*_maps.npz"))
+        # several folders can belong to one run (e.g. Grad-CAM on all images,
+        # IG on a subset); their map files are pooled and read per method
+        maps.setdefault((info["task"], info["model"], int(info["fold"]), int(info["seed"]), role), []).extend(
+            sorted(d.glob("chunk_*_maps.npz")))
     cat = lambda L: pd.concat(L, ignore_index=True) if L else pd.DataFrame()  # noqa: E731
     return pd.DataFrame(runs), cat(regs), cat(imgs), cat(rads), maps, pending
 
@@ -152,8 +154,10 @@ def read_maps(files, method):
     for f in files:
         z = np.load(f)
         if method not in z.files:
-            return None
+            continue
         ids += list(z["sample_id"]); m.append(z[method]); fov.append(z["fov"])
+    if not m:
+        return None
     return dict(ids=np.array(ids), maps=np.concatenate(m), fov=np.concatenate(fov))   # float16 in memory
 
 
@@ -201,10 +205,12 @@ def main() -> int:
                median_abs_logit_diff=("median_abs_logit_diff", "median")).round(4)), ""]
 
     ig = imgs[imgs.method == "ig"]
+    if len(ig) and "ig_gap" in ig.columns:
+        ig = ig[ig.ig_gap.abs() >= 0.5]          # ratio is unstable for tiny logit gaps
     if len(ig):
         comp = ig.groupby(["task", "model"]).ig_completeness.describe(percentiles=[.1, .5, .9])
         comp[["10%", "50%", "90%"]].round(3).to_csv(out / "ig_completeness.csv")
-        md += ["## IG completeness (1.0 = enough integration steps)\n",
+        md += ["## IG completeness, images with |logit gap| >= 0.5 (1.0 = enough integration steps)\n",
                mdt(comp[["10%", "50%", "90%"]].round(3)), ""]
 
     # ---- enrichment vs null ---------------------------------------------
@@ -338,9 +344,12 @@ def main() -> int:
         gc, igm = read_maps(files, "gradcam"), read_maps(files, "ig")
         if gc is None or igm is None:
             continue
-        for i in range(len(gc["ids"])):
-            arow.append(dict(task=task, model=model, fold=fold, sample_id=gc["ids"][i],
-                             spearman=pix_spearman(pos("gradcam", gc["maps"][i]), pos("ig", igm["maps"][i]),
+        jx = {sid: j for j, sid in enumerate(igm["ids"])}       # align by image, not by position
+        for i, sid in enumerate(gc["ids"]):
+            if sid not in jx:
+                continue
+            arow.append(dict(task=task, model=model, fold=fold, sample_id=sid,
+                             spearman=pix_spearman(pos("gradcam", gc["maps"][i]), pos("ig", igm["maps"][jx[sid]]),
                                                    gc["fov"][i])))
     MA = pd.DataFrame(arow)
     if len(MA):
@@ -378,7 +387,9 @@ def main() -> int:
             for k, v in loaded.items():
                 if k[4] == "fold" or k[1] not in prim:
                     continue
-                kind = "same model, other seed" if k[4] == "extra seed" else "same model, same seed (repeat)"
+                kind = {"extra seed": "same model, other seed",
+                        "exact repeat": "same model, same seed (repeat)",
+                        "random init": "same architecture, random weights"}[k[4]]
                 iv = {s: i for i, s in enumerate(v["ids"])}
                 for s in ids:
                     if s in iv:

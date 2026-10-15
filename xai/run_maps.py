@@ -158,8 +158,14 @@ def main() -> int:
         raise SystemExit(f"{man_f}: run was trained from a dirty tree -- refusing")
     ckpt = rd / "checkpoints" / "best.pt"
 
+    # The folder name records everything that changes the content: run, null,
+    # methods, image subset and IG steps. Runs with different settings never
+    # overwrite or skip each other.
     tag = (f"fold{args.fold}_seed{args.seed}" + ("_rep" if args.tree.endswith("_rep") else "")
-           + ("_randinit" if args.random_init else ""))
+           + ("_randinit" if args.random_init else "")
+           + "__" + "+".join(sorted(args.methods))
+           + (f"_n{args.limit}" if args.limit else "")
+           + (f"_ig{args.ig_steps}" if "ig" in args.methods else ""))
     out = Path(args.out_root)
     out = (out if out.is_absolute() else root / out) / args.task / args.model / tag
     out.mkdir(parents=True, exist_ok=True)
@@ -170,6 +176,9 @@ def main() -> int:
     preds = pd.read_csv(rd / "predictions" / "val_predictions.csv",
                         dtype={"sample_id": str, "patient_id": str})
     preds["_label"] = preds.y_true.astype(float)
+    # sorted by sample id, so every model, seed and null run of a fold draws the
+    # SAME --limit subset (row order differs between prediction files)
+    preds = preds.sort_values("sample_id", kind="mergesort").reset_index(drop=True)
     if args.limit:
         preds = stratified_subsample(preds, "_label", args.limit, seed=0)
     preds = preds.reset_index(drop=True)
@@ -269,6 +278,8 @@ def main() -> int:
                     maps["ig"] = ig
                     gap = float(canon_logit[j]) - lb
                     base_row["ig_baseline_logit"] = lb
+                    base_row["ig_sum"] = float(ig.sum())
+                    base_row["ig_gap"] = gap
                     base_row["ig_completeness"] = float(ig.sum()) / gap if abs(gap) > 1e-6 else np.nan
                 for m, sal in maps.items():
                     row = dict(base_row, method=m, map_max=float(sal.max()), map_min=float(sal.min()),
@@ -302,9 +313,17 @@ def main() -> int:
                median_abs_logit_diff=float((d.canonical_logit - d.recorded_logit).abs().median()),
                corr=float(np.corrcoef(d.canonical_logit, d.recorded_logit)[0, 1]))
     if "ig" in args.methods:
-        ig = imgs[imgs.method == "ig"].ig_completeness
-        fid["ig_completeness_median"] = float(ig.median())
-        fid["ig_completeness_p10_p90"] = [float(ig.quantile(.1)), float(ig.quantile(.9))]
+        g = imgs[imgs.method == "ig"]
+        # The ratio is unstable when the image and baseline logits are close,
+        # so judge it on images whose logit gap is at least 0.5, plus the
+        # absolute error relative to the median gap.
+        big = g[g.ig_gap.abs() >= 0.5]
+        fid["ig_completeness_median_gap>=0.5"] = float(big.ig_completeness.median()) if len(big) else None
+        fid["ig_completeness_p10_p90_gap>=0.5"] = ([float(big.ig_completeness.quantile(.1)),
+                                                    float(big.ig_completeness.quantile(.9))] if len(big) else None)
+        fid["ig_abs_error_over_median_gap"] = float((g.ig_sum - g.ig_gap).abs().median()
+                                                    / max(g.ig_gap.abs().median(), 1e-9))
+        fid["ig_images_gap>=0.5"] = int(len(big))
     (out / "DONE").write_text(json.dumps(fid, indent=2))
     print("fidelity:", json.dumps(fid))
     if fid["median_abs_logit_diff"] > 0.25 and not args.random_init:
