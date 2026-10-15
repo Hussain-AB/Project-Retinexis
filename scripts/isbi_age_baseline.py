@@ -101,7 +101,28 @@ MALE = {"m", "male", "man", "masculino", "homem", "h"}
 FEMALE = {"f", "female", "woman", "feminino", "mulher"}
 
 
-def encode_sex(s: pd.Series, source: pd.Series) -> tuple[pd.Series, dict]:
+def parse_codes(spec: str | None) -> dict[str, dict[str, str]]:
+    """'brset:1=male,2=female' (several datasets separated by ';') ->
+    {'brset': {'1': 'male', '2': 'female'}}. Values must be male/female."""
+    out: dict[str, dict[str, str]] = {}
+    for part in filter(None, (spec or "").split(";")):
+        ds, _, pairs = part.partition(":")
+        if not pairs:
+            fail(f"bad --*-sex-codes entry {part!r}; expected e.g. brset:1=male,2=female")
+        m = {}
+        for kv in pairs.split(","):
+            k, _, v = kv.partition("=")
+            v = v.strip().lower()
+            if v not in ("male", "female"):
+                fail(f"bad --*-sex-codes value {kv!r}; the right-hand side must be male or female")
+            m[k.strip().lower()] = v
+        if sorted(m.values()) != ["female", "male"]:
+            fail(f"--*-sex-codes for {ds!r} must name one male and one female code: {m}")
+        out[ds.strip().lower()] = m
+    return out
+
+
+def encode_sex(s: pd.Series, source: pd.Series, codes: dict | None = None) -> tuple[pd.Series, dict]:
     """1 = male, 0 = female when the column uses words. When it uses numeric
     codes, the codes must be the same two values in every source dataset (then
     the direction is irrelevant to a logistic model and the sorted order is used).
@@ -111,10 +132,20 @@ def encode_sex(s: pd.Series, source: pd.Series) -> tuple[pd.Series, dict]:
     raw = raw.mask(raw.isin(["", "nan", "none", "na", "n/a", "unknown", "<na>"]))
     raw = raw.str.replace(r"\.0$", "", regex=True)
     by_src = {str(k): v.value_counts().to_dict() for k, v in raw.groupby(source.astype(str))}
+    for ds, m in (codes or {}).items():        # documented numeric codes -> words, per dataset
+        rows = source.astype(str).str.lower() == ds
+        if not rows.any():
+            fail(f"--*-sex-codes names dataset {ds!r}, which has no rows (datasets: {sorted(by_src)})")
+        unknown = set(raw[rows].dropna()) - set(m)
+        if unknown:
+            fail(f"--*-sex-codes for {ds!r} does not cover the values {sorted(unknown)}")
+        raw = raw.where(~rows, raw.map(lambda v: m.get(v, v) if isinstance(v, str) else v))
     words = raw.isin(MALE | FEMALE)
     if words.all() or (words | raw.isna()).all():
         out = raw.map(lambda v: 1.0 if v in MALE else (0.0 if v in FEMALE else np.nan))
-        return out.astype(float), {"coding": "words (1 = male, 0 = female)", "by_dataset": by_src}
+        return out.astype(float), {"coding": "words (1 = male, 0 = female)"
+                                   + (f"; numeric codes translated per dataset: {codes}" if codes else ""),
+                                   "by_dataset": by_src}
     vals = sorted(raw.dropna().unique().tolist())
     per = {k: sorted(v.dropna().unique().tolist()) for k, v in raw.groupby(source.astype(str))}
     if len(vals) == 2 and not words.any() and all(v == vals for v in per.values()):
@@ -123,7 +154,7 @@ def encode_sex(s: pd.Series, source: pd.Series) -> tuple[pd.Series, dict]:
                                              "(same two codes in every dataset)", "by_dataset": by_src}
     fail("the sex column is coded inconsistently, so it cannot be used without a decision. "
          f"Value counts per dataset: {by_src}. Pass --<task>-sex-col to choose another column, "
-         "or tell Claude which value means what.")
+         "or state the coding, e.g. --hypertension-sex-codes 'brset:1=male,2=female'.")
 
 
 def design(df: pd.DataFrame, kind: str, ref: dict, image_logit=None) -> np.ndarray:
@@ -168,6 +199,7 @@ def main() -> int:
     ap.add_argument("--tasks", nargs="+", default=["hypertension", "cimt"])
     for t in ("hypertension", "cimt"):
         ap.add_argument(f"--{t}-age-col"); ap.add_argument(f"--{t}-sex-col")
+        ap.add_argument(f"--{t}-sex-codes", help="numeric sex codes per dataset, e.g. 'brset:1=male,2=female'")
     ap.add_argument("--allow-sha-mismatch", action="store_true",
                     help="testing only: do not stop when the labels CSV differs from the manifest's")
     a = ap.parse_args()
@@ -215,7 +247,8 @@ def main() -> int:
         if task == "hypertension" and not set(lab["_src"]) <= {"brset", "odir"}:
             fail(f"{task}: cannot tell BRSET from ODIR rows (source values {sorted(set(lab['_src']))[:5]})")
         lab["_age"] = pd.to_numeric(lab[age_col], errors="coerce")
-        lab["_sex"], sexinfo = encode_sex(lab[sex_col], lab["_src"])
+        lab["_sex"], sexinfo = encode_sex(lab[sex_col], lab["_src"],
+                                          parse_codes(getattr(a, f"{task}_sex_codes")))
         info[task] = dict(labels_csv=str(man0["labels_csv"]), sha256=got, sample_id_col=sid_col,
                           label_col=lab_col, patient_id_col=pid_col, age_col=age_col, sex_col=sex_col,
                           age_missing=int(lab["_age"].isna().sum()), rows=len(lab),
