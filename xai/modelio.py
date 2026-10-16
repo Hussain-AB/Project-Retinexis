@@ -34,6 +34,35 @@ from src.config.loader import load_config  # noqa: E402
 from src.models import create_model  # noqa: E402
 
 
+# Architectures whose pretrained=False constructor does not rebuild the trained
+# network. src/models/dinov3.py, without pretrained weights, builds its backbone
+# from AutoConfig.for_model("dinov2") -- a DINOv2 skeleton (14-px patches, learned
+# position embeddings, mask_token (1, C)) -- while the checkpoints are DINOv3ViT
+# (16-px patches, RoPE, registers, mask_token (1, 1, C)). Loading then fails with
+# a size mismatch on _backbone.embeddings.mask_token. These are built exactly as
+# training built them (pretrained=True, from the local HF cache) and the
+# checkpoint then overwrites every weight.
+BUILD_AS_TRAINED = {"dinov3"}
+
+
+def reinit_hf_backbone(model: torch.nn.Module) -> None:
+    """Random-init null for a Hugging Face backbone: same config (so the same
+    architecture, patch size, registers, RoPE), freshly initialised weights."""
+    old = model._backbone
+    from transformers import AutoModel
+    new = AutoModel.from_config(old.config)
+    po, pn = dict(old.named_parameters()), dict(new.named_parameters())
+    if po.keys() != pn.keys() or any(po[k].shape != pn[k].shape for k in po):
+        raise RuntimeError("re-initialised backbone does not match the pretrained one's parameters")
+    # tensors whose fresh init is random (not a constant such as LayerNorm 1/0 or
+    # layer-scale) must all have changed; constant-init ones are reset by design
+    rand = [k for k in pn if pn[k].numel() > 1 and pn[k].min() != pn[k].max()]
+    same = [k for k in rand if torch.equal(po[k].detach().cpu(), pn[k].detach().cpu())]
+    if not rand or same:
+        raise RuntimeError(f"re-initialisation left {len(same)}/{len(rand)} randomly-initialised tensors unchanged")
+    model._backbone = new.to(next(old.parameters()).device)
+
+
 def checkpoint_path(cfg, project_root: Path = PROJECT_ROOT) -> Path:
     """Mirror of TrainConfig.run_dir, which now encodes the seed.
 
@@ -73,9 +102,10 @@ def load_model(
 ) -> LoadedModel:
     cfg = load_config(config_path(task, model_key, project_root), overrides={"fold": fold})
 
-    # pretrained=False: weights come from the checkpoint, so skip the download.
+    # pretrained=False: weights come from the checkpoint, so skip the download --
+    # except where pretrained=False builds a DIFFERENT network (see below).
     kwargs = dict(cfg.model_kwargs)
-    if "pretrained" in kwargs:
+    if "pretrained" in kwargs and cfg.architecture not in BUILD_AS_TRAINED:
         kwargs["pretrained"] = False
     try:
         model = create_model(cfg.architecture, **kwargs)

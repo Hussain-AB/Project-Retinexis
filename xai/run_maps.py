@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import socket
 import time
 from pathlib import Path
@@ -56,8 +57,9 @@ from .frames import (CANON_SIZE, blurred_baseline, fov_geometry, fov_mask, load_
                      load_canonical_mask, normalise_map)
 from .gradcam import GradCAM
 from .metrics import enrichment, mass_fraction, pointing_game, radial_profile, soft_iou_topk
-from .modelio import (MODEL_FAMILY, MODEL_KEYS, PROJECT_ROOT, CanonicalScorer, LoadedModel,
-                      config_path, create_model, load_config, load_model, stratified_subsample)
+from .modelio import (BUILD_AS_TRAINED, MODEL_FAMILY, MODEL_KEYS, PROJECT_ROOT, CanonicalScorer, LoadedModel,
+                      config_path, create_model, load_config, load_model, reinit_hf_backbone,
+                      stratified_subsample)
 
 N_RADIAL = 16
 LOWRES = 128
@@ -147,6 +149,18 @@ def main() -> int:
 
     root = PROJECT_ROOT
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if device.type == "cuda":
+        # Fail in one second, with a clear message, on a GPU this PyTorch build has
+        # no kernels for (e.g. GTX 1080 Ti, sm_61, on a build for sm_70+).
+        major, minor = torch.cuda.get_device_capability()
+        archs = torch.cuda.get_arch_list()
+        ok = f"sm_{major}{minor}" in archs or any(
+            a.startswith("compute_") and int(a.split("_")[1]) <= major * 10 + minor for a in archs)
+        if not ok:
+            raise SystemExit(f"GPU {torch.cuda.get_device_name()} (sm_{major}{minor}) is not supported by this "
+                             f"PyTorch build ({' '.join(archs)}). Resubmit with GPU_CONSTRAINT set.")
+    elif os.environ.get("SLURM_JOB_ID"):
+        raise SystemExit("no CUDA device in a SLURM job -- refusing to run attribution on CPU")
     rd, cfg = run_dir_for(args.task, args.model, args.fold, args.seed, args.tree, root)
     man_f = rd / "run_manifest.json"
     if not man_f.exists():
@@ -209,9 +223,12 @@ def main() -> int:
         # (vessels, disc, FOV rim) even for random weights.
         torch.manual_seed(0)
         kw = dict(cfg.model_kwargs or {})
-        if "pretrained" in kw:
+        if "pretrained" in kw and cfg.architecture not in BUILD_AS_TRAINED:
             kw["pretrained"] = False
-        net = create_model(cfg.architecture, **kw).eval().to(device)
+        net = create_model(cfg.architecture, **kw)
+        if cfg.architecture in BUILD_AS_TRAINED:
+            reinit_hf_backbone(net)       # built as trained, then every backbone weight re-drawn
+        net = net.eval().to(device)
         for prm in net.parameters():
             prm.requires_grad_(False)
         lm = LoadedModel(key=args.model, task=args.task, fold=args.fold, model=net, cfg=cfg,
