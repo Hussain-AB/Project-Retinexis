@@ -43,7 +43,8 @@ Checks -- any failure writes nothing
     fold, and each fold's test list equals the core ConvNeXtV2-B and
     EfficientNet-B2 runs' record-present BRSET test images -- so new and old
     models are compared on identical images,
-  * kept images = --expect-images (7,350 = Adequate BRSET with a record),
+  * kept images = --expect-images (7,336 = BRSET record-present images in the dedup CSV,
+    i.e. the union of the label audit's record-present test folds),
   * the generated configs differ from their source only in the three fields,
     and no run_dir collides with any other config in the tree.
 """
@@ -158,18 +159,18 @@ def filter_splits(splits: dict, all_ids: set[str], all_pids: set[str], kept: set
         fno = fd.get("fold", i)
         if fno != i:
             fail_now(f"splits JSON: entry {i} has fold={fno!r}; expected folds in order 0-4")
-        id_keys = []
+        id_keys, pid_keys = [], {}
         for k, v in fd.items():
             if isinstance(v, list) and v and all(isinstance(x, str) for x in v):
                 n_img = sum(x in all_ids for x in v)
                 n_pid = sum(x in all_pids for x in v)
                 if n_img >= 0.99 * len(v):
                     id_keys.append(k)
-                elif n_pid >= 0.5 * len(v):
-                    fail_now(f"fold {i} key '{k}' holds patient ids, not image ids -- this schema is not "
-                             f"handled; paste this output")
+                elif n_pid >= 0.99 * len(v) and k.endswith("_patient_ids"):
+                    pid_keys[k] = k[: -len("_patient_ids")] + "_sample_ids"
                 else:
-                    fail_now(f"fold {i} key '{k}': only {n_img}/{len(v)} entries are image ids in the CSV")
+                    fail_now(f"fold {i} key '{k}': {n_img}/{len(v)} entries are image ids and {n_pid}/{len(v)} "
+                             f"patient ids of the CSV -- not handled")
             elif isinstance(v, list):
                 fail_now(f"fold {i} key '{k}' is a list but not of strings (or empty) -- not handled")
         if len(id_keys) < 2:
@@ -191,10 +192,24 @@ def filter_splits(splits: dict, all_ids: set[str], all_pids: set[str], kept: set
         nf, updated = {}, []
         for k, v in fd.items():
             nf[k] = [x for x in v if x in kept] if k in id_keys else v
+        # a patient-id list must be exactly the patients of its image-id list (checked on the
+        # original); after filtering it keeps, in original order, the patients that still have an image
+        for pk, ik in pid_keys.items():
+            if ik not in id_keys:
+                fail_now(f"fold {i}: patient list '{pk}' has no image list '{ik}'")
+            before = {pid_of[x] for x in fd[ik] if x in pid_of}
+            if set(fd[pk]) != before or len(fd[pk]) != len(set(fd[pk])):
+                fail_now(f"fold {i}: '{pk}' is not the set of patients of '{ik}' "
+                         f"({len(set(fd[pk]))} vs {len(before)}) -- not handled")
+            after = {pid_of[x] for x in nf[ik]}
+            nf[pk] = [p for p in fd[pk] if p in after]
+            if set(nf[pk]) != after:
+                ERRORS.append(f"fold {i}: '{pk}' does not match '{ik}' after filtering")
+            updated.append(f"{pk}:{len(fd[pk])}->{len(nf[pk])}")
         # an integer that is the length of exactly one id list (e.g. n_train) is a count: update it.
         # Any other field is copied verbatim and listed, so nothing changes silently.
         for k, v in fd.items():
-            if k in id_keys or k == "fold":
+            if k in id_keys or k in pid_keys or k == "fold":
                 continue
             match = [ik for ik in id_keys if isinstance(v, int) and not isinstance(v, bool) and len(fd[ik]) == v]
             if len(match) == 1:
@@ -239,8 +254,8 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--brset-labels", type=Path, required=True,
                     help="original BRSET labels_brset.csv (sha256 f472398a...)")
-    ap.add_argument("--expect-images", type=int, default=7350,
-                    help="Adequate BRSET images with a record (label audit); 0 disables the check")
+    ap.add_argument("--expect-images", type=int, default=7336,
+                    help="BRSET record-present images in the dedup CSV (label audit); 0 disables the check")
     ap.add_argument("--write", action="store_true")
     args = ap.parse_args()
     os.chdir(ROOT)
@@ -309,12 +324,30 @@ def main() -> int:
     splits = json.loads(splits_in.read_text())
     pid_of = dict(zip(df[sid], df[pid]))
     new_splits, report = filter_splits(splits, set(df[sid]), set(df[pid]), kept, pid_of)
+    # top-level scalars: a count of the source CSV (rows / patients) is updated to the filtered CSV;
+    # anything else (seed, fractions, column names, ...) still describes how the folds were made
+    # and is copied verbatim. Every field is printed with what happened to it.
+    totals = {len(df): ("rows", len(kept_df)), df[pid].nunique(): ("patients", kept_df[pid].nunique())}
+    for k, v in splits.items():
+        if k == "folds" or isinstance(v, (list, dict)):
+            continue
+        if isinstance(v, int) and not isinstance(v, bool) and v in totals and re.search(r"row|patient|sample", k):
+            what, new_v = totals[v]
+            new_splits[k] = int(new_v)
+            print(f"  top-level '{k}': {v} -> {new_v}  (CSV {what} count)")
+        else:
+            print(f"  top-level '{k}': {v!r}  (verbatim)")
     y_of = dict(zip(kept_df[sid], kept_df[lab].astype(float)))
     for r, fd in zip(report, new_splits["folds"]):
         t = fd[r["test_key"]]
         r["test_positives"] = int(sum(y_of[x] for x in t))
     rep = pd.DataFrame(report)
-    print("\n" + rep.to_string(index=False) + "\n")
+    show = rep.drop(columns=["counts_updated"]).rename(columns=lambda c: c.replace("_sample_ids", ""))
+    print("\n  images per list, before -> after filtering:\n" + show.to_string(index=False))
+    for r in report:
+        if r["counts_updated"]:
+            print(f"  fold {r['fold']} updated: {r['counts_updated']}")
+    print()
 
     # ---- configs ---------------------------------------------------------------
     rel = lambda p: p.relative_to(ROOT).as_posix()  # noqa: E731
@@ -325,6 +358,25 @@ def main() -> int:
         t_csv, t_spl = tmp / csv_out.name, tmp / splits_out.name
         kept_df.to_csv(t_csv, index=False)
         t_spl.write_text(json.dumps(new_splits, indent=2) + "\n")
+        # the project's own splits reader, if it has one, must accept the new file as it does the old
+        try:
+            import importlib
+            sp = importlib.import_module("src.data.splits")
+            readers = [n for n in ("load_splits",) if callable(getattr(sp, n, None))]
+        except Exception as exc:  # noqa: BLE001
+            readers, sp = [], None
+            print(f"  note: src.data.splits not importable ({exc}); reader check skipped")
+        for n in readers:
+            try:
+                getattr(sp, n)(splits_in)
+            except Exception as exc:  # noqa: BLE001
+                print(f"  note: src.data.splits.{n} fails on the ORIGINAL file too ({exc}); check skipped")
+                continue
+            try:
+                getattr(sp, n)(t_spl)
+                print(f"  src.data.splits.{n} reads the new splits file")
+            except Exception as exc:  # noqa: BLE001
+                ERRORS.append(f"src.data.splits.{n} rejects the new splits file: {exc!r}")
         # the written CSV must read back to exactly the kept rows
         back = pd.read_csv(t_csv, dtype=str, keep_default_na=False)
         if not back.reset_index(drop=True).equals(kept_df.reset_index(drop=True)):
