@@ -140,7 +140,12 @@ cat > "${WORKER}" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
 cd "${ROOT}"
+# env_setup.sh expands variables that may be unset in a batch job (PYTHONPATH, and
+# whatever module/conda activation reads), so it is sourced with -u off. -e stays
+# on: if env_setup.sh returns non-zero the job still dies here.
+set +u
 source scripts/ibex/env_setup.sh
+set -u
 row=\$(sed -n "\$((SLURM_ARRAY_TASK_ID + 1))p" "${MANIFEST}")
 IFS=\$'\t' read -r task model fold seed tree vd extra tlimit <<< "\${row}"
 [ "\${extra}" = "-" ] && extra=""
