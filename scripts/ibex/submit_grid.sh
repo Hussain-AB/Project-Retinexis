@@ -43,7 +43,13 @@ ONLY_MODEL=""
 # wbce       = EfficientNet-B2 with the weighted loss back on, both tasks,
 #              5 folds at seed 42 -- isolates the loss as the cause of the
 #              calibration change.
-# Configs for resolution and wbce come from scripts/make_ablation_configs.py.
+# recorded   = ConvNeXtV2-B and EfficientNet-B2 trained and tested on BRSET
+#              images WITH a clinical record only (no missing-as-negative
+#              labels, so the camera / missing-record shortcut cannot be
+#              learned), hypertension only, 5 folds at seed 42. Test folds are
+#              the label audit's "BRSET, record present" images.
+# Configs for resolution and wbce come from scripts/make_ablation_configs.py,
+# for recorded from scripts/make_recorded_configs.py.
 ARM="core"
 PER_MODEL_OUT=0
 DESIGN="full"     # full = fold 0 x 3 seeds + replicate, then folds 1-4; folds = 0-4 at seed 42
@@ -113,7 +119,19 @@ case "${ARM}" in
         # EfficientNet-B2. No seed or replicate rows.
         DESIGN="folds"
         ;;
-    *) echo "unknown --arm: ${ARM} (expected core, vessel, resolution or wbce)" >&2; exit 2 ;;
+    recorded)
+        MODELS=(convnextv2_recorded efficientnet_b2_recorded)
+        TASKS=(hypertension)
+        CFG_SUFFIX=".yaml"
+        CFG_SUBDIR="recorded"
+        OUT_BASE="outputs_isbi_rec"
+        REP_BASE="outputs_isbi_rec_rep"
+        # 5 folds at seed 42, paired fold-for-fold with the core grid's models
+        # re-scored on the same record-present images. No seed or replicate rows.
+        # The two models have different architectures, so one tree is safe.
+        DESIGN="folds"
+        ;;
+    *) echo "unknown --arm: ${ARM} (expected core, vessel, resolution, wbce or recorded)" >&2; exit 2 ;;
 esac
 SEEDS=(42 1337 2024)
 GRID_DIR="${OUT_BASE}/_grid"
@@ -157,6 +175,10 @@ time_for () {   # task model -> HH:MM:SS
         # EfficientNet-B2 measured at ~44 s/epoch on hypertension
         hypertension:efficientnet_b2_wbce) echo "04:00:00" ;;
         cimt:efficientnet_b2_wbce)         echo "02:00:00" ;;
+        # recorded arm: ~7.3k BRSET images instead of the full combined set, so
+        # well under the full-data times above; same limits as the wbce arm.
+        hypertension:convnextv2_recorded)      echo "04:00:00" ;;
+        hypertension:efficientnet_b2_recorded) echo "02:00:00" ;;
         *)                            echo "12:00:00" ;;
     esac
 }

@@ -132,8 +132,8 @@ def main() -> int:
         fail("no hypertension runs found under --root")
     subsets = {
         "BRSET all": lambda d: d.source_dataset == "brset",
-        "BRSET, record present": lambda d: (d.source_dataset == "brset") & d.record.fillna(False).astype(bool),
-        "BRSET, record present, Canon CR": lambda d: (d.source_dataset == "brset") & d.record.fillna(False).astype(bool)
+        "BRSET, record present": lambda d: (d.source_dataset == "brset") & d.record.eq(True),
+        "BRSET, record present, Canon CR": lambda d: (d.source_dataset == "brset") & d.record.eq(True)
                                                      & (d.camera == "Canon CR"),
     }
     ci_rows, cmp_rows, cam_rows, rho_rows = [], [], [], []
